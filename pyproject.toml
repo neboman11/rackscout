@@ -1,0 +1,20 @@
+[project]
+name = "rackscout"
+version = "0.2.0"
+description = "Self-hosted, index-assisted multi-OEM used server deal finder"
+requires-python = ">=3.12"
+dependencies = [
+  "beautifulsoup4>=4.13,<5",
+  "fastapi>=0.115,<1",
+  "httpx>=0.28,<1",
+  "playwright==1.58.0",
+  "psycopg[binary]>=3.2,<4",
+  "uvicorn>=0.34,<1",
+]
+
+[dependency-groups]
+dev = ["pytest>=8,<10"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

@@ -1,0 +1,13 @@
+.git
+.venv
+__pycache__
+.pytest_cache
+*.pyc
+.env
+.env.*
+tests
+CONTRACT.md
+README.md
+compose.yaml
+artifacts
+.private

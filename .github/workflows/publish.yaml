@@ -1,0 +1,61 @@
+name: Test and publish
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rackscout-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16.11-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: rackscout-ci
+          POSTGRES_DB: rackscout_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d rackscout_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      RACKSCOUT_TEST_DATABASE_URL: postgresql://postgres:rackscout-ci@127.0.0.1:5432/rackscout_test
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Install locked dependencies
+        run: |
+          python3 -m pip install --user uv==0.13.6
+          uv sync --frozen
+      - name: Test with isolated PostgreSQL schemas
+        run: uv run --frozen pytest -q
+
+  publish:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build immutable release image
+        run: docker build --pull --label org.opencontainers.image.source=https://github.com/${{ github.repository }} --tag ghcr.io/${{ github.repository }}:${{ github.sha }} .
+      - name: Publish immutable release image
+        run: docker push ghcr.io/${{ github.repository }}:${{ github.sha }}

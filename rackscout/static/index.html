@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+<title>RackScout — used rack server finder</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<a href="#inventory" class="sr-only">Skip to inventory</a>
+<header>
+  <div class="brand"><span class="mark" aria-hidden="true"><i></i><i></i><i></i></span>RackScout <small>Secondhand hardware. First-class filters.</small></div>
+</header>
+<div class="notice" role="note"><strong>Indexed coverage</strong><span id="coverage-note">US eBay Buy It Now index; not exhaustive. Shipping quotes come from the index and their destination is unconfirmed.</span></div>
+<div id="status-warning" class="banner warn" role="status" hidden></div>
+<main>
+  <div class="heading">
+    <div>
+      <div class="eyebrow">Homelab / Server finder</div>
+      <h1>Find your next server.</h1>
+      <p class="subtle">Compare the configuration you get, not the price in the headline.</p>
+    </div>
+    <div class="location">
+      <div>USD · US listings</div>
+      <div>Index shipping quote: destination unconfirmed</div>
+      <details class="destination">
+        <summary>Delivery preference (this browser only)</summary>
+        <form id="destination-form" class="destination-form" autocomplete="off">
+          <label class="field"><span>Country</span><input id="dest-country" type="text" maxlength="60" placeholder="e.g. United States"></label>
+          <label class="field"><span>Postcode</span><input id="dest-postcode" type="text" maxlength="12" placeholder="e.g. 75067"></label>
+          <p class="subtle">Saved only in this browser. Changing it does not request a new quote; listed shipping still reflects the index's unconfirmed destination.</p>
+          <button type="submit" class="close">Save preference</button>
+          <button type="button" class="linkbutton" id="dest-clear">Clear</button>
+          <p id="dest-saved" class="subtle" role="status"></p>
+        </form>
+      </details>
+    </div>
+  </div>
+  <div class="workspace">
+    <aside class="filters" aria-label="Inventory filters">
+      <div class="filter-head"><h2>Filters</h2><button class="linkbutton" id="reset" type="button">Reset</button></div>
+      <form id="filters" class="filter-fields">
+        <label class="field"><span>Vendor</span><select id="vendor"><option value="">All vendors</option><option>Dell</option><option>HPE</option><option>Supermicro</option><option>Lenovo</option><option>Cisco</option></select></label>
+        <label class="field"><span>Model</span><select id="model"><option value="">All models</option></select></label>
+        <div class="pair">
+          <label class="field"><span>Generation</span><select id="generation" disabled><option value="">Any</option></select></label>
+          <label class="field"><span>Rack height</span><select id="height"><option value="">Any</option><option value="1">1U</option><option value="2">2U</option></select></label>
+        </div>
+        <div class="pair">
+          <label class="field"><span>Min RAM</span><select id="min_ram"><option value="">Any</option><option value="16">16 GB</option><option value="32">32 GB</option><option value="64">64 GB</option><option value="128">128 GB</option></select></label>
+          <label class="field"><span>Min bays</span><select id="min_bays"><option value="">Any</option><option value="4">4 bays</option><option value="8">8 bays</option><option value="10">10 bays</option></select></label>
+        </div>
+        <label class="field"><span>Drive form factor</span><select id="drive_size"><option value="">SFF or LFF</option><option value="SFF">2.5″ SFF</option><option value="LFF">3.5″ LFF</option></select></label>
+        <label class="field"><span>Populated sockets</span><select id="cpu_count"><option value="">Any CPU count</option><option value="1">Single populated</option><option value="2">Dual populated</option></select></label>
+        <label class="field"><span>Maximum total price (USD)</span><input id="max_total" type="text" placeholder="No limit" inputmode="decimal" autocomplete="off" aria-describedby="max_total_help"><small id="max_total_help" class="field-help">Applies to known quoted totals. An unknown total never counts as a match; a base-price listing that might fit appears only under unverified leads.</small></label>
+        <div id="max_total_error" class="field-error" role="alert" hidden></div>
+        <div class="rule">
+          <label class="check"><input type="checkbox" id="diskless"><span>No storage included</span></label>
+          <label class="check"><input type="checkbox" id="hide_damaged"><span>Hide damaged chassis</span></label>
+          <label class="check"><input type="checkbox" id="modern_only"><span>Dell 14G-era or newer platforms only<small>Uses sourced comparable platforms for every vendor. Unknown generation never counts. Turn off to inspect older or unclassified servers.</small></span></label>
+          <label class="check"><input type="checkbox" id="confirmed_only"><span>Confirmed hardware only<small>Excludes unverified leads and unknown CPU, RAM, PSU, cooling or NIC status.</small></span></label>
+          <label class="check"><input type="checkbox" id="include_leads"><span>Include unverified leads<small>Shown in a separate group, never counted as matches.</small></span></label>
+        </div>
+      </form>
+      <div class="filter-footer">8+ bays highlighted, not required.<br>Missing accessories called out separately.</div>
+      <div id="facet-error" class="filter-footer" role="status" hidden><span id="facet-message"></span> <button type="button" class="linkbutton" id="facet-retry">Retry filters</button></div>
+    </aside>
+    <section id="inventory" aria-label="Server listings" aria-busy="false">
+      <div class="summary">
+        <div><strong id="count" aria-live="polite"></strong><div class="subtle" id="summary-note"></div></div>
+        <label class="sort" for="sort">Sort by
+          <select id="sort">
+            <option value="price">Total price: low to high</option>
+            <option value="ram">RAM: high to low</option>
+            <option value="bays">Drive bays: high to low</option>
+            <option value="benchmark">CPU Mark per CPU: high to low</option>
+          </select>
+        </label>
+      </div>
+      <div class="search"><label for="q" class="sr-only">Search model, CPU or seller</label><input id="q" type="search" maxlength="200" placeholder="Search model, CPU or seller…" autocomplete="off"></div>
+      <div id="chips" class="chips" aria-label="Active filter summary"></div>
+      <div id="loading" class="loading" role="status" hidden>Loading listings…</div>
+      <div id="error" class="banner error" role="alert" hidden><span id="error-text"></span><button type="button" class="close" id="retry">Retry</button></div>
+      <div id="results">
+        <div class="table-wrap" tabindex="0" role="region" aria-label="Server comparison table, scroll horizontally on narrow screens">
+          <table id="table">
+            <caption class="sr-only">Server listings grouped into matches and unverified leads. Totals are item plus quoted shipping, tax excluded. Benchmarks are per-CPU PassMark reference averages, not scores measured on these listings.</caption>
+            <thead><tr>
+              <th scope="col">Server / Seller</th>
+              <th scope="col">CPU</th>
+              <th scope="col">Populated</th>
+              <th scope="col" id="th-benchmark">CPU Mark / CPU</th>
+              <th scope="col" id="th-ram">RAM</th>
+              <th scope="col" id="th-bays">Bays</th>
+              <th scope="col">Hardware</th>
+              <th scope="col" class="num" id="th-price">Total USD</th>
+            </tr></thead>
+          </table>
+        </div>
+        <div id="empty" class="empty" hidden>
+          <h3>No servers found</h3>
+          <p id="empty-text">No listings match these filters. Try a higher budget, fewer required bays, or include unverified leads.</p>
+          <button type="button" class="close" id="empty-reset">Reset filters</button>
+        </div>
+        <nav id="pager" class="pager" aria-label="Pagination" hidden>
+          <button type="button" class="close" id="prev">Previous</button>
+          <span id="page-label" aria-live="polite"></span>
+          <button type="button" class="close" id="next">Next</button>
+        </nav>
+      </div>
+      <div class="table-note"><span>Select a server name for configuration evidence and missing parts.</span><span>Item + quoted shipping · tax excluded</span></div>
+      <p class="benchmark-note">PassMark PerformanceTest reference averages for a single CPU; higher is better. Scores are not multiplied for dual-socket listings and are not whole-server estimates. ST = single-thread rating. Benchmark version and retrieval date appear in each listing's details. Missing scores show “Not available.”</p>
+      <div class="collection" id="collection" aria-label="Collection status">
+        <div><h2><span class="statusdot" id="status-dot" aria-hidden="true"></span>Collection status</h2><div id="status-body"><p>Loading status…</p></div></div>
+        <button type="button" class="linkbutton" id="status-refresh">Refresh status</button>
+      </div>
+    </section>
+  </div>
+</main>
+<dialog id="detail" aria-labelledby="detail-title">
+  <div class="dialog-head"><h2 id="detail-title">Listing details</h2><button class="close" id="close" type="button" autofocus>Close</button></div>
+  <div class="dialog-body" id="detail-body"></div>
+  <div class="dialog-foot">Index-derived record, not a current availability check. A seller claim is not an independent hardware test.</div>
+</dialog>
+</body>
+</html>
