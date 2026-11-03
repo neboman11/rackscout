@@ -99,15 +99,17 @@ GitHub Actions runs the PostgreSQL-backed suite before publishing an image tagge
 
 ## Collection lifecycle and configuration
 
-Collection runs every four hours (`0 */4 * * *`). A database advisory lock prevents overlapping collectors. Versioned migrations preserve inventory and history.
+Automatic collection runs once daily at **04:00 UTC** (`0 4 * * *`). The **Refresh data** button queues an additional collection using the same server-detail budget, source backoff and global collector lock. Manual requests have a one-hour cooldown; repeated clicks cannot create overlapping collections. Versioned migrations preserve inventory and history.
 
 - `RACKSCOUT_MAX_DETAILS`: bounded description/page checks per run; default 25.
 - `RACKSCOUT_BROWSER_ENABLED`: browser verification switch; default true.
 - `RACKSCOUT_RECHECK_COOLDOWN_HOURS`: minimum interval between detail attempts; default 6.
 - `RACKSCOUT_PAGE_VERIFICATION_HOURS`: successful page-verification lifetime; default 12, not shorter than the cooldown. Allow room for the cron interval too.
 - `RACKSCOUT_BENCHMARKS_FILE`: optional privately provisioned reference JSON file.
+- `RACKSCOUT_REFRESH_ORIGINS`: exact comma-separated origins allowed to request manual collection; empty disables manual requests.
+- `RACKSCOUT_REFRESH_COOLDOWN_SECONDS`: persisted manual-request cooldown; default 3600 seconds.
 
-Discovery pages and origins are fixed/allowlisted, not user-supplied scrape URLs. No public collection-trigger endpoint exists.
+Discovery pages and origins are fixed/allowlisted, not user-supplied scrape URLs. `GET /api/refresh` only reads stored/control state; `POST /api/refresh` accepts an empty JSON object with the same-origin application header. The web process only queues work; a separate `python -m rackscout refresh-worker` process performs collection without Kubernetes API credentials. Restarted workers retain queued requests and mark interrupted running requests failed rather than replaying them.
 
 Stored verification expires at read time, even without another collector run. Failed, blocked and browser-disabled attempts never renew successful verification. Historical quotes remain unverified leads with the last successful page check separate from the latest detail attempt. Legacy observations without a recorded expiry retain a conservative six-hour window.
 
@@ -115,13 +117,15 @@ At the default budget, up to 12 checks go to cheap previously verified target sy
 
 Source freshness is separate from local fetch time. Re-fetching an unchanged old snapshot does not make it fresh. Valid-source disappearance is not confirmed sold; absence-based archival requires seven days and a complete applicable vendor snapshot. Price history is retained for 90 days.
 
+Manual refresh is intended only for a trusted private LAN. Origin/header checks protect against browser cross-site requests, not untrusted clients that forge headers. Do not expose the control publicly without authentication. Daily collection reduces request volume, not the risk of provider restrictions or the need for permission. Source freshness/verification expiry remain explicit; the daily schedule does not make old data current.
+
 ## Apartment deployment
 
 GitOps chart: `~/Desktop/argocd-definitions/application/rackscout/`.
 Apartment values: `environments/apartment/application/rackscout.yaml`.
 Private route: `http://rackscout.apartment` through the existing `local-gateway`.
 
-Resources include CNPG PostgreSQL (one instance, 5Gi replicated Mayastor storage), migration Job, web Deployment/Service and collection CronJob. The home ApplicationSet excludes RackScout. Database resources are protected from Argo prune/deletion; that is not a backup strategy.
+Resources include CNPG PostgreSQL (one instance, 5Gi replicated Mayastor storage), migration Job, web Deployment/Service, isolated manual-refresh worker sidecar and daily collection CronJob. The worker uses the same immutable image, its own resources and temporary volume, a 30-minute collection deadline, and no Kubernetes API token or Job-creation permissions. The home ApplicationSet excludes RackScout. Database resources are protected from Argo prune/deletion; that is not a backup strategy.
 
 The apartment browser is disabled because an actual sandbox probe failed under current node/runtime policy, even with `SYS_CHROOT`. HTTP discovery and seller-description enrichment remain enabled. Do not enable browser checks until a sandboxed launch works under the intended policy; do not weaken that policy.
 

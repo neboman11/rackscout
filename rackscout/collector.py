@@ -598,32 +598,66 @@ def prune_history(conn: psycopg.Connection) -> None:
         conn.execute("DELETE FROM price_history WHERE observed_at < now() - interval '90 days'")
 
 
+class SchemaNotMigrated(RuntimeError):
+    """The database schema is older than this release; ``migrate`` must run first."""
+
+
+@dataclass(frozen=True)
+class CollectionResult:
+    """Outcomes this collection recorded in ``source_runs`` (enrichment may also be ``skipped``)."""
+
+    discovery: str
+    enrichment: str
+
+
+def try_collector_lock(lock_conn: psycopg.Connection) -> bool:
+    """Take the global collector session lock on an autocommit connection without waiting."""
+    return bool(lock_conn.execute("SELECT pg_try_advisory_lock(%s) AS ok", (db.COLLECTOR_LOCK_KEY,)).fetchone()["ok"])
+
+
+def run_collection(settings: Settings, max_details: int | None = None, browser: bool | None = None,
+                   fetcher: HttpFetcher | None = None) -> CollectionResult:
+    """Run discovery plus bounded enrichment. The caller MUST already hold the collector lock.
+
+    Opens and closes its own work connection. A fetcher created here is closed
+    here; a caller-supplied fetcher stays the caller's.
+    """
+    # Autocommit: every `conn.transaction()` block is a real, atomic transaction.
+    conn = db.connect(settings.db_connect_timeout, autocommit=True)
+    owned = fetcher is None
+    try:
+        if fetcher is None:
+            fetcher = HttpFetcher(settings.request_timeout, settings.request_delay)
+        if not db.schema_ready(conn):
+            raise SchemaNotMigrated("database schema not migrated")
+        discovery = run_discovery(conn, settings, fetcher)
+        enrichment = run_enrichment(
+            conn, settings, fetcher,
+            settings.max_details if max_details is None else max_details,
+            settings.browser_enabled if browser is None else (browser and settings.browser_enabled),
+        )
+        prune_history(conn)
+        return CollectionResult(discovery, enrichment)
+    finally:
+        if owned and fetcher is not None:
+            fetcher.close()
+        conn.close()
+
+
 def collect(settings: Settings, max_details: int | None = None, browser: bool | None = None) -> int:
-    """Run one collection. Returns process exit code."""
+    """Run one scheduled collection unless another collector holds the lock. Returns process exit code."""
     lock_conn = db.connect(settings.db_connect_timeout, autocommit=True)
     try:
-        if not lock_conn.execute("SELECT pg_try_advisory_lock(%s) AS ok", (db.COLLECTOR_LOCK_KEY,)).fetchone()["ok"]:
+        if not try_collector_lock(lock_conn):
             log.warning("another collector holds the lock; exiting")
             return 0
-        # Autocommit: every `conn.transaction()` block is a real, atomic transaction.
-        conn = db.connect(settings.db_connect_timeout, autocommit=True)
-        fetcher = HttpFetcher(settings.request_timeout, settings.request_delay)
         try:
-            if not db.schema_ready(conn):
-                log.error("database schema not migrated; run `python -m rackscout migrate`")
-                return 1
-            conn.commit()
-            discovery = run_discovery(conn, settings, fetcher)
-            run_enrichment(
-                conn, settings, fetcher,
-                settings.max_details if max_details is None else max_details,
-                settings.browser_enabled if browser is None else (browser and settings.browser_enabled),
-            )
-            prune_history(conn)
-            # A partial snapshot applied its valid records; its degraded state is visible in /api/status.
-            return 0 if discovery in ("success", "partial") else 1
-        finally:
-            fetcher.close()
-            conn.close()
+            result = run_collection(settings, max_details=max_details, browser=browser)
+        except SchemaNotMigrated:
+            log.error("database schema not migrated; run `python -m rackscout migrate`")
+            return 1
+        # A partial snapshot applied its valid records; its degraded state is visible in /api/status.
+        return 0 if result.discovery in ("success", "partial") else 1
     finally:
+        # Closing the session releases the advisory lock.
         lock_conn.close()

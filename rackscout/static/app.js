@@ -736,6 +736,207 @@ function setStatusWarning(message) {
 }
 
 // ---------------------------------------------------------------------------
+// Manual data refresh
+// ---------------------------------------------------------------------------
+
+const REFRESH_POLL_MS = 5000;
+const REFRESH_COOLDOWN_POLL_MS = 60000;
+const REFRESH_ERROR_POLL_MS = 15000;
+const REFRESH_LABELS = {
+  succeeded: 'Last manual refresh succeeded',
+  partial: 'Last manual refresh completed partially',
+  blocked: 'Last manual refresh was blocked by a source',
+  failed: 'Last manual refresh failed',
+};
+let refreshSeq = 0;
+let refreshTimer = 0;
+let refreshInfo = null;
+let refreshPosting = false;
+let refreshNote = '';
+let refreshNoteIsError = false;
+let refreshWasActive = false;
+let refreshResyncPending = false;
+let refreshBaselineSet = false;
+let refreshLastCompletion = '';
+
+function refreshActive(info) {
+  return !!info && (info.state === 'queued' || info.state === 'running' || info.collector_running === true);
+}
+
+function refreshCooldown(info) {
+  return !!info && info.enabled && Number(info.retry_after_seconds) > 0;
+}
+
+function refreshWaitText(seconds) {
+  const secs = Math.max(1, Math.ceil(Number(seconds) || 0));
+  if (secs < 90) return 'about ' + secs + ' seconds';
+  if (secs < 5400) return 'about ' + Math.ceil(secs / 60) + ' minutes';
+  return 'about ' + Math.ceil(secs / 3600) + ' hours';
+}
+
+function refreshMessageText(info) {
+  if (!info) return refreshNote || 'Checking refresh availability…';
+  const when = formatDate(info.finished_at);
+  const server = info.message ? ' ' + info.message : '';
+  if (!info.enabled) return 'Manual refresh is disabled on this server. Data is still collected automatically once a day at 04:00 UTC.' + server;
+  if (info.state === 'queued') return 'Refresh queued. Waiting for the worker to start. This page will update when it finishes.' + server;
+  if (info.state === 'running') return 'Collecting data now. This can take several minutes; filters and listings stay usable.' + server;
+  if (info.collector_running) return 'A collection is already running (scheduled or manual). Refresh is unavailable until it finishes.' + server;
+  const parts = [];
+  if (REFRESH_LABELS[info.state]) parts.push(REFRESH_LABELS[info.state] + (when ? ' at ' + when : '') + '.' + server);
+  if (refreshCooldown(info)) {
+    const retry = formatDate(info.retry_at);
+    parts.push('Next manual refresh ' + (retry ? 'available at ' + retry + ' (' : 'available in ') + refreshWaitText(info.retry_after_seconds) + (retry ? ')' : '') + '.');
+  } else if (!parts.length) {
+    parts.push('Ready. Manual refresh requests are rate limited and never bypass source back-offs.' + server);
+  }
+  return parts.join(' ');
+}
+
+function renderRefresh() {
+  const info = refreshInfo;
+  const button = $('refresh-data');
+  const canClick = !!info && info.enabled === true && info.can_refresh === true && !refreshActive(info) && !refreshCooldown(info) && !refreshPosting;
+  button.setAttribute('aria-disabled', canClick ? 'false' : 'true');
+  let label = 'Refresh data';
+  if (refreshPosting) label = 'Requesting…';
+  else if (info && info.state === 'queued') label = 'Refresh queued';
+  else if (refreshActive(info)) label = 'Collecting…';
+  button.textContent = label;
+  const message = $('refresh-message');
+  const next = refreshNote || refreshMessageText(info);
+  if (message.textContent !== next) message.textContent = next;
+  message.classList.toggle('err', refreshNoteIsError || (!!info && (info.state === 'failed' || info.state === 'blocked') && !refreshActive(info)));
+}
+
+function setRefreshNote(text, isError) {
+  refreshNote = text;
+  refreshNoteIsError = !!isError;
+}
+
+function scheduleRefreshPoll(delay) {
+  window.clearTimeout(refreshTimer);
+  refreshTimer = 0;
+  if (delay > 0) refreshTimer = window.setTimeout(() => loadRefresh(), delay);
+}
+
+function onRefreshInfo(info) {
+  const wasActive = refreshWasActive;
+  const terminal = ['succeeded', 'partial', 'blocked', 'failed'].includes(info.state) && !!info.request_id && !!info.finished_at;
+  const completion = terminal ? info.request_id + '|' + info.finished_at : '';
+  const newCompletion = refreshBaselineSet && completion !== '' && completion !== refreshLastCompletion;
+  if (completion !== '') refreshLastCompletion = completion;
+  refreshBaselineSet = true;
+  refreshInfo = info;
+  const active = refreshActive(info);
+  refreshWasActive = active;
+  renderRefresh();
+  if (active) {
+    scheduleRefreshPoll(REFRESH_POLL_MS);
+  } else if (refreshCooldown(info)) {
+    const wait = Number(info.retry_after_seconds) * 1000 + 1000;
+    scheduleRefreshPoll(Math.min(REFRESH_COOLDOWN_POLL_MS, Math.max(1000, wait)));
+  } else {
+    scheduleRefreshPoll(0);
+  }
+  // A collection we watched has ended: reload data using the current URL state.
+  // Also fires for a completion (new request_id/finished_at) first seen after the active phase was missed.
+  if ((wasActive && !active) || (newCompletion && !active)) reloadAfterCollection();
+}
+
+function validRefreshInfo(data) {
+  return !!data && typeof data === 'object' && typeof data.enabled === 'boolean' && typeof data.state === 'string';
+}
+
+async function readRefreshBody(response) {
+  try {
+    const data = await response.json();
+    return validRefreshInfo(data) ? data : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function reloadAfterCollection() {
+  // Filters, search, sort and page live in `state`/URL and are untouched; the detail dialog is separate and stays open.
+  loadListings();
+  loadFacets();
+  loadStatus();
+}
+
+async function loadRefresh(keepNote) {
+  if (refreshPosting) {
+    // Never let a state read race a pending POST; resync once the POST settles.
+    refreshResyncPending = true;
+    return;
+  }
+  const seq = ++refreshSeq;
+  window.clearTimeout(refreshTimer);
+  refreshTimer = 0;
+  try {
+    const response = await fetch('/api/refresh', { headers: { Accept: 'application/json' }, credentials: 'same-origin' });
+    const data = await readRefreshBody(response);
+    if (seq !== refreshSeq) return;
+    if (!data) throw new Error('Server responded ' + response.status);
+    if (keepNote !== true) setRefreshNote('', false);
+    onRefreshInfo(data);
+  } catch (error) {
+    if (seq !== refreshSeq) return;
+    setRefreshNote('Could not read refresh state (' + (error.message || 'network error') + '). Use “Check status” to try again.', true);
+    renderRefresh();
+    // Keep following a collection we already know is active; otherwise wait for the user.
+    scheduleRefreshPoll(refreshWasActive ? REFRESH_ERROR_POLL_MS : 0);
+  }
+}
+
+async function requestRefresh() {
+  const button = $('refresh-data');
+  if (button.getAttribute('aria-disabled') === 'true' || refreshPosting) return;
+  refreshPosting = true;
+  setRefreshNote('', false);
+  renderRefresh();
+  ++refreshSeq; // invalidate any GET already in flight; GETs are deferred while posting
+  window.clearTimeout(refreshTimer);
+  refreshTimer = 0;
+  let response;
+  try {
+    response = await fetch('/api/refresh', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-RackScout-Refresh': '1' },
+      body: '{}',
+    });
+  } catch (error) {
+    refreshPosting = false;
+    refreshResyncPending = false;
+    setRefreshNote('Refresh request could not be sent (' + (error.message || 'network error') + '). It may or may not have been received; the current state is being re-read.', true);
+    renderRefresh();
+    loadRefresh(true);
+    return;
+  }
+  const data = await readRefreshBody(response);
+  refreshPosting = false;
+  const resync = refreshResyncPending;
+  refreshResyncPending = false;
+  if (data) {
+    setRefreshNote('', false);
+    if (response.status === 429 && !(Number(data.retry_after_seconds) > 0)) {
+      const header = Number(response.headers.get('Retry-After'));
+      if (header > 0) data.retry_after_seconds = header;
+    }
+    onRefreshInfo(data);
+    if (resync) loadRefresh(true);
+    return;
+  }
+  const detail = response.status === 403 ? 'Manual refresh is not permitted from this page or is disabled.'
+    : response.status === 503 ? 'The server could not process the request right now.'
+    : 'Server responded ' + response.status + '.';
+  setRefreshNote('Refresh not started. ' + detail + ' You can try again.', true);
+  renderRefresh();
+  loadRefresh(true);
+}
+
+// ---------------------------------------------------------------------------
 // Detail dialog
 // ---------------------------------------------------------------------------
 
@@ -983,7 +1184,11 @@ function init() {
   });
   $('prev').addEventListener('click', () => goToPage(-1));
   $('next').addEventListener('click', () => goToPage(1));
-  $('status-refresh').addEventListener('click', loadStatus);
+  $('refresh-data').addEventListener('click', requestRefresh);
+  $('status-refresh').addEventListener('click', () => {
+    loadStatus();
+    loadRefresh();
+  });
   $('destination-form').addEventListener('submit', saveDestination);
   $('dest-clear').addEventListener('click', clearDestination);
 
@@ -1010,6 +1215,7 @@ function init() {
 
   loadFacets();
   loadStatus();
+  loadRefresh();
   loadListings();
 }
 

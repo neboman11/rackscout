@@ -78,6 +78,16 @@
       <div id="facet-error" class="filter-footer" role="status" hidden><span id="facet-message"></span> <button type="button" class="linkbutton" id="facet-retry">Retry filters</button></div>
     </aside>
     <section id="inventory" aria-label="Server listings" aria-busy="false">
+      <section class="refresh" id="refresh-panel" aria-labelledby="refresh-title">
+        <div class="refresh-text">
+          <h2 id="refresh-title">Data refresh</h2>
+          <p class="subtle" id="refresh-schedule">Listings are collected automatically once a day at 04:00 UTC. “Refresh data” asks the server to collect now; it honors source back-offs and is rate limited.</p>
+          <p id="refresh-message" class="refresh-message" role="status" aria-live="polite">Checking refresh availability…</p>
+        </div>
+        <div class="refresh-actions">
+          <button type="button" class="primary" id="refresh-data" aria-disabled="true" aria-describedby="refresh-schedule refresh-message">Refresh data</button>
+        </div>
+      </section>
       <div class="summary">
         <div><strong id="count" aria-live="polite"></strong><div class="subtle" id="summary-note"></div></div>
         <label class="sort" for="sort">Sort by
@@ -123,7 +133,7 @@
       <p class="benchmark-note">PassMark PerformanceTest reference averages for a single CPU; higher is better. Scores are not multiplied for dual-socket listings and are not whole-server estimates. ST = single-thread rating. Benchmark version and retrieval date appear in each listing's details. Missing scores show “Not available.”</p>
       <div class="collection" id="collection" aria-label="Collection status">
         <div><h2><span class="statusdot" id="status-dot" aria-hidden="true"></span>Collection status</h2><div id="status-body"><p>Loading status…</p></div></div>
-        <button type="button" class="linkbutton" id="status-refresh">Refresh status</button>
+        <button type="button" class="linkbutton" id="status-refresh" aria-describedby="status-refresh-help">Check status</button><span id="status-refresh-help" class="sr-only">Re-reads stored collection status and refresh state. Does not collect new data.</span>
       </div>
     </section>
   </div>

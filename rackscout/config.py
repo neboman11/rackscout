@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # Fixed discovery pages, in collection order. Each embeds that vendor's complete
 # inventory; the combined /servers/ page embeds only a truncated 1000-row subset.
@@ -23,7 +24,7 @@ VENDOR_INDEX_URLS: tuple[tuple[str, str], ...] = (
 INDEX_HOSTS = frozenset({"perunitprice.com", "www.perunitprice.com"})
 DESCRIPTION_HOST = "itm.ebaydesc.com"
 EBAY_HOST = "www.ebay.com"
-USER_AGENT = "RackScout/0.1 (private personal deal finder; respects robots.txt)"
+USER_AGENT = "RackScout/0.1 (private personal deal finder)"
 BENCHMARKS_FILE_ENV = "RACKSCOUT_BENCHMARKS_FILE"
 
 
@@ -68,6 +69,37 @@ def _bool(name: str, default: bool) -> bool:
     raise ConfigError(f"{name} must be true or false")
 
 
+def _origins(name: str) -> tuple[str, ...]:
+    """Comma-separated exact http(s) origins: scheme://host[:port], no path, wildcard or credentials.
+
+    Scheme and host are lowercased and a default port is dropped so values
+    compare equal to the ``Origin`` header browsers send.
+    """
+    out: list[str] = []
+    for raw in os.environ.get(name, "").split(","):
+        value = raw.strip()
+        if not value:
+            continue
+        try:
+            parts = urlsplit(value)
+            port = parts.port
+        except ValueError:
+            raise ConfigError(f"{name} contains an invalid origin") from None
+        host = parts.hostname or ""
+        if (parts.scheme.lower() not in ("http", "https") or not host or "*" in value
+                or parts.username is not None or parts.password is not None
+                or parts.path or parts.query or parts.fragment or value.endswith(("?", "#"))):
+            raise ConfigError(f"{name} entries must be exact http(s) origins without path, wildcard or credentials")
+        scheme = parts.scheme.lower()
+        netloc = f"[{host}]" if ":" in host else host
+        if port is not None and port != (443 if scheme == "https" else 80):
+            netloc = f"{netloc}:{port}"
+        origin = f"{scheme}://{netloc}"
+        if origin not in out:
+            out.append(origin)
+    return tuple(out)
+
+
 @dataclass(frozen=True)
 class Settings:
     source_pages: tuple[tuple[str, str], ...]
@@ -83,6 +115,10 @@ class Settings:
     max_variants: int
     db_connect_timeout: int
     migrate_wait_seconds: int
+    # Exact browser origins allowed to request a manual refresh; empty disables the feature.
+    refresh_origins: tuple[str, ...] = ()
+    # Minimum time between accepted manual refresh requests.
+    refresh_cooldown_seconds: int = 3600
 
 
 def load_settings() -> Settings:
@@ -106,6 +142,8 @@ def load_settings() -> Settings:
         max_variants=_int("RACKSCOUT_MAX_VARIANTS", 12, 1, 50),
         db_connect_timeout=_int("RACKSCOUT_DB_CONNECT_TIMEOUT", 10, 1, 120),
         migrate_wait_seconds=_int("RACKSCOUT_MIGRATE_WAIT_SECONDS", 180, 0, 3600),
+        refresh_origins=_origins("RACKSCOUT_REFRESH_ORIGINS"),
+        refresh_cooldown_seconds=_int("RACKSCOUT_REFRESH_COOLDOWN_SECONDS", 3600, 60, 7 * 24 * 3600),
     )
 
 

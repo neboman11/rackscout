@@ -1,6 +1,7 @@
-"""Read-only web API and same-origin static frontend."""
+"""Web API (read-only apart from the protected manual-refresh enqueue) and same-origin static frontend."""
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import Iterator
@@ -12,8 +13,9 @@ import psycopg
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
-from . import db, queries
+from . import db, queries, refresh
 from .config import load_settings
 from .domain import SUPPORTED_VENDORS, normalize_vendor
 
@@ -21,6 +23,8 @@ log = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 +\-]{0,59}")
 MAX_MODELS = 100
+REFRESH_PATH = "/api/refresh"
+MAX_REFRESH_BODY = 1024
 
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
@@ -41,8 +45,9 @@ _settings = load_settings()
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next: Any) -> Any:
-    if request.method not in ("GET", "HEAD"):
-        return JSONResponse({"detail": "Method not allowed"}, status_code=405, headers={**SECURITY_HEADERS, "Allow": "GET, HEAD"})
+    if request.method not in ("GET", "HEAD") and not (request.method == "POST" and request.url.path == REFRESH_PATH):
+        allow = "GET, HEAD, POST" if request.url.path == REFRESH_PATH else "GET, HEAD"
+        return JSONResponse({"detail": "Method not allowed"}, status_code=405, headers={**SECURITY_HEADERS, "Allow": allow})
     response = await call_next(request)
     for key, value in SECURITY_HEADERS.items():
         response.headers.setdefault(key, value)
@@ -219,6 +224,68 @@ def facets(conn: Conn) -> dict[str, Any]:
 @app.get("/api/status")
 def status(conn: Conn) -> dict[str, Any]:
     return queries.status(conn)
+
+
+@app.get(REFRESH_PATH)
+def refresh_status(conn: Conn) -> dict[str, Any]:
+    return refresh.status(conn, _settings)
+
+
+def _enqueue_refresh() -> tuple[str, dict[str, Any]]:
+    try:
+        conn = db.connect(_settings.db_connect_timeout)
+    except db.DatabaseUnavailable:
+        log.warning("database unavailable")
+        raise HTTPException(status_code=503, detail="Database unavailable") from None
+    try:
+        return refresh.enqueue(conn, _settings)
+    except psycopg.Error as exc:
+        log.error("refresh enqueue failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Database unavailable") from None
+    finally:
+        conn.close()
+
+
+@app.post(REFRESH_PATH)
+async def request_refresh(request: Request) -> JSONResponse:
+    """Queue one manual collection. Only exact allowlisted origins; accepts no options.
+
+    Every request check runs before any database access; the API never scrapes.
+    """
+    allowed = _settings.refresh_origins
+    if not allowed:
+        raise HTTPException(status_code=403, detail="Manual refresh disabled")
+    if request.headers.get("origin") not in allowed:
+        raise HTTPException(status_code=403, detail="Cross-origin request rejected")
+    site = request.headers.get("sec-fetch-site")
+    if site is not None and site != "same-origin":
+        raise HTTPException(status_code=403, detail="Cross-origin request rejected")
+    if request.headers.get("x-rackscout-refresh") != "1":
+        raise HTTPException(status_code=403, detail="Missing X-RackScout-Refresh header")
+    media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if media_type != "application/json":
+        raise HTTPException(status_code=415, detail="Content-Type must be application/json")
+    declared = request.headers.get("content-length")
+    if declared is not None and (not declared.strip().isdigit() or int(declared) > MAX_REFRESH_BODY):
+        raise HTTPException(status_code=413, detail="Request body too large")
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > MAX_REFRESH_BODY:
+            raise HTTPException(status_code=413, detail="Request body too large")
+        body.extend(chunk)
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Body must be the JSON object {}") from None
+    if not isinstance(payload, dict) or payload:
+        raise HTTPException(status_code=422, detail="Manual refresh accepts no options; send {}")
+
+    outcome, state = await run_in_threadpool(_enqueue_refresh)
+    if outcome == "accepted":
+        return JSONResponse(state, status_code=202)
+    if outcome == "cooldown":
+        return JSONResponse(state, status_code=429, headers={"Retry-After": str(state["retry_after_seconds"])})
+    return JSONResponse(state, status_code=409)
 
 
 @app.get("/", include_in_schema=False)

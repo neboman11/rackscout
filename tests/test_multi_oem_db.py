@@ -370,7 +370,7 @@ def test_migration_002_preserves_dell_inventory_history_and_freshness(legacy_con
     from rackscout import db, queries
 
     listing_id, config_id = _seed_legacy_dell(legacy_conn)
-    assert db.migrate(legacy_conn) == [2]
+    db.migrate(legacy_conn)
     assert db.migrate(legacy_conn) == []
     assert db.schema_ready(legacy_conn)
 

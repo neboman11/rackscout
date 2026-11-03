@@ -112,6 +112,15 @@ th.num,td.money{text-align:right}
 .collection p,.collection li{font-size:11px;color:var(--muted)}
 .collection ul{margin:4px 0;padding-left:18px}
 .err{color:var(--red)}
+.refresh{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:16px;padding:13px 16px;background:#fff;border:1px solid var(--line);border-radius:6px;font-size:12px}
+.refresh-text{min-width:0;flex:1 1 auto}
+.refresh-text h2{font-size:13px;margin-bottom:2px}
+.refresh-text p{font-size:12px;overflow-wrap:anywhere}
+.refresh-message{margin-top:6px;font-weight:600}
+.refresh-message.err{color:var(--red)}
+.refresh-actions{flex:0 0 auto}
+.primary{border:1px solid var(--teal);background:var(--teal);color:#fff;border-radius:5px;padding:9px 16px;min-height:44px;min-width:130px;font-weight:650}
+.primary[aria-disabled="true"]{background:#d3dcd8;border-color:#b9c6c1;color:#44544f;cursor:not-allowed}
 .statusdot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#89968b;margin-right:6px}
 .statusdot.ok{background:var(--teal)}
 .statusdot.warn{background:#b1781e}
@@ -165,6 +174,8 @@ dd{margin:0;overflow-wrap:anywhere}
   .sort select{max-width:185px}
   .table-note{flex-direction:column;gap:4px}
   .collection{flex-direction:column;gap:10px}
+  .refresh{flex-direction:column;align-items:stretch;gap:12px}
+  .refresh-actions .primary{width:100%}
   .destination-form{width:220px}
   dl{grid-template-columns:100px 1fr}
 }

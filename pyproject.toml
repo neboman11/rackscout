@@ -1,6 +1,6 @@
 [project]
 name = "rackscout"
-version = "0.3.0"
+version = "0.4.0"
 description = "Self-hosted, index-assisted multi-OEM used server deal finder"
 requires-python = ">=3.12"
 dependencies = [
