@@ -147,7 +147,7 @@ DISKLESS_RE = re.compile(
     rf"|\b{STORAGE_WORD}\s*(?:[:\-–]\s*)?(?:none|not\s+included|n/?a)\b"
     rf"|\bwithout\s+(?:any\s+)?{STORAGE_WORD}\b"
     rf"|\b{STORAGE_WORD}\b[^.;]{{0,25}}\bnot\s+included\b"
-    r"|\bdiskless\b|\bno\s+(?:ram|memory)\s*(?:[/&,]|and|or)\s*(?:hdds?|ssds?|drives?|storage|disks?)\b",
+    r"|\bdiskless\b",
     _I,
 )
 INCLUDED_STORAGE_RE = re.compile(
@@ -233,6 +233,19 @@ STATUS_CLAIM_RE = re.compile(
     rf"\b(?:no|without|zero)\s+(?:any\s+)?{STATUS_COMPONENT}\s+{STATUS_NOUN}\b"
     rf"|{STATUS_COMPONENT}\s*[:\-–]\s*(?:no|without|zero)\s+(?:any\s+)?{STATUS_NOUN}\b",
     _I,
+)
+
+# Split component lists before matching whole names. This avoids exponential
+# token ambiguity and short aliases swallowing multiword names.
+COMPONENT_TOKEN_RE = re.compile(
+    rf"(?:{DRIVE_PART_RE.pattern}|{STATUS_COMPONENT}|"
+    + "|".join(pattern.pattern for _, pattern, _ in ACCESSORIES) + ")", _I
+)
+COMPONENT_SEPARATOR_RE = re.compile(r"[,/&]|\b(?:and|or)\b", _I)
+UNKNOWN_COMPONENT_RE = re.compile(r"[A-Z][A-Z0-9]{1,7}")
+DIAGNOSTIC_COMPONENT_RE = re.compile(rf"(?P<component>.+?)(?:[\s-]+related)?\s+{STATUS_NOUN}", _I)
+NEGATED_COMPONENT_LIST_RE = re.compile(
+    r"\b(?:no|without|missing|zero)\s+(?P<parts>[^;.!|()]+)", _I
 )
 
 CPU_PATTERNS = (
@@ -396,6 +409,24 @@ def _damage(segment: str) -> bool:
     return False
 
 
+def _expand_component_exclusions(match: re.Match[str]) -> str:
+    """Normalize complete, plain negative lists; retain ambiguous claims verbatim."""
+    parts = [part.strip() for part in COMPONENT_SEPARATOR_RE.split(match.group("parts")) if part.strip()]
+    if len(parts) < 2:
+        return match.group()
+    def plain(part: str) -> bool:
+        return bool(COMPONENT_TOKEN_RE.fullmatch(part) or UNKNOWN_COMPONENT_RE.fullmatch(part))
+
+    if not all(plain(part) for part in parts[:-1]):
+        return match.group()
+    diagnostic = DIAGNOSTIC_COMPONENT_RE.fullmatch(parts[-1])
+    if diagnostic and COMPONENT_TOKEN_RE.fullmatch(diagnostic["component"]):
+        return " "
+    if not plain(parts[-1]):
+        return match.group()
+    return "no " + ", no ".join(parts)
+
+
 def _optional_at(segment: str, pos: int) -> bool:
     """True when option wording precedes ``pos`` within its clause (an offered choice)."""
     start = 0
@@ -485,6 +516,7 @@ def extract_claims(segments: list[str], *, contextual: bool, context_ends: set[i
         option_inline = bool(OPTION_RE.search(segment))
         option_like = option_heading or option_inline
         text = clean_text(segment)
+        segment = NEGATED_COMPONENT_LIST_RE.sub(_expand_component_exclusions, segment)
         segment = STATUS_CLAIM_RE.sub(" ", segment)
         # "drive trays/bays/backplane" describe chassis parts, not installed drives.
         storage_segment = DRIVE_PART_RE.sub(" ", segment)
@@ -765,7 +797,8 @@ def interpret_variant(labels: dict[str, str]) -> VariantFacts:
         if component_label:
             facts.component_unresolved = f"{shown} selects a component that is not verified"
         if storage_label:
-            text = DRIVE_PART_RE.sub(" ", value)
+            text = NEGATED_COMPONENT_LIST_RE.sub(_expand_component_exclusions, value)
+            text = DRIVE_PART_RE.sub(" ", STATUS_CLAIM_RE.sub(" ", text))
             diskless = bool(DISKLESS_RE.search(text) or NONE_VALUE_RE.fullmatch(text))
             included = bool(STORAGE_CAPACITY_RE.search(text) or _included_storage(text))
             if not ram_label:

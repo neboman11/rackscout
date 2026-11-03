@@ -69,7 +69,8 @@ WHERE c.active AND l.archived_at IS NULL AND l.ended_at IS NULL AND c.currency =
 @dataclass(frozen=True)
 class Filters:
     vendor: str | None = None
-    model: str | None = None
+    # Selected chassis models, OR-combined; empty means unconstrained. Deduplicated by the API layer.
+    models: tuple[str, ...] = ()
     # Vendor-scoped platform generation (Dell 14G, HPE Gen10, Supermicro X11, ...); requires ``vendor``.
     generation: int | None = None
     modern_only: bool = True
@@ -107,9 +108,9 @@ def build_predicates(f: Filters) -> tuple[list[str], list[str], list[str], dict[
     if f.vendor:
         hard.append("l.vendor = %(vendor)s")
         p["vendor"] = f.vendor
-    if f.model:
-        hard.append("c.model = %(model)s")
-        p["model"] = f.model
+    if f.models:
+        hard.append("c.model = ANY(%(models)s)")
+        p["models"] = list(f.models)
     if f.generation is not None:
         hard.append("(m.vendor = %(vendor)s AND m.generation = %(generation)s)")
         p["generation"] = f.generation
@@ -272,6 +273,7 @@ def serialize(r: dict[str, Any], match_state: str) -> dict[str, Any]:
         "drive_bays": r["drive_bays"],
         "drive_size": r["drive_size"],
         "storage_state": r["storage_state"],
+        "storage_conf": r["storage_conf"],
         "hardware_state": r["hardware_state"],
         "damage": r["damage"],
         "price_kind": r["price_kind"],

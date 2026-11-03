@@ -43,7 +43,17 @@
       <div class="filter-head"><h2>Filters</h2><button class="linkbutton" id="reset" type="button">Reset</button></div>
       <form id="filters" class="filter-fields">
         <label class="field"><span>Vendor</span><select id="vendor"><option value="">All vendors</option><option>Dell</option><option>HPE</option><option>Supermicro</option><option>Lenovo</option><option>Cisco</option></select></label>
-        <label class="field"><span>Model</span><select id="model"><option value="">All models</option></select></label>
+        <div class="field" id="model-field">
+          <span id="model-label">Model</span>
+          <details class="multi" id="model-picker">
+            <summary aria-describedby="model-help"><span class="multi-count" id="model-count">All models</span><span class="multi-names" id="model-names"></span></summary>
+            <div class="multi-panel">
+              <button type="button" class="linkbutton" id="model-clear" disabled>Clear model selection</button>
+              <fieldset class="multi-options" id="model-options" aria-labelledby="model-label"></fieldset>
+            </div>
+          </details>
+          <small id="model-help" class="field-help">Tick one or more models. None ticked means all models.</small>
+        </div>
         <div class="pair">
           <label class="field"><span>Generation</span><select id="generation" disabled><option value="">Any</option></select></label>
           <label class="field"><span>Rack height</span><select id="height"><option value="">Any</option><option value="1">1U</option><option value="2">2U</option></select></label>
@@ -80,7 +90,6 @@
         </label>
       </div>
       <div class="search"><label for="q" class="sr-only">Search model, CPU or seller</label><input id="q" type="search" maxlength="200" placeholder="Search model, CPU or seller…" autocomplete="off"></div>
-      <div id="chips" class="chips" aria-label="Active filter summary"></div>
       <div id="loading" class="loading" role="status" hidden>Loading listings…</div>
       <div id="error" class="banner error" role="alert" hidden><span id="error-text"></span><button type="button" class="close" id="retry">Retry</button></div>
       <div id="results">

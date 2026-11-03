@@ -144,7 +144,26 @@ def test_same_generation_number_under_different_vendors_is_not_conflated(conn):
     assert listed(conn, vendor="Dell", generation=10, **PERMISSIVE) == []
     assert item_ids(listed(conn, vendor="HPE", generation=10, **PERMISSIVE)) == {HPE_DL360_G10[0]}
     assert item_ids(listed(conn, vendor="Lenovo", **PERMISSIVE)) == {LENOVO_SR630[0]}
-    assert item_ids(listed(conn, model="HPE DL360 Gen10", **PERMISSIVE)) == {HPE_DL360_G10[0]}
+    assert item_ids(listed(conn, models=("HPE DL360 Gen10",), **PERMISSIVE)) == {HPE_DL360_G10[0]}
+
+
+def test_multi_model_selection_unions_models_and_intersects_other_filters(conn):
+    assert discover(conn, ALL) == "success"
+    both_dell = listed(conn, models=("R640", "R630"), modern_only=False, **{**PERMISSIVE, "height": None})
+    assert item_ids(both_dell) == {DELL_R640[0], DELL_R630[0]}
+    # All-vendor selection may span OEMs.
+    cross = listed(conn, models=("R640", "HPE DL360 Gen10", "Lenovo SR630"), **PERMISSIVE)
+    assert item_ids(cross) == {DELL_R640[0], HPE_DL360_G10[0], LENOVO_SR630[0]}
+    # Empty selection is unconstrained; duplicate entries do not change the result.
+    assert item_ids(listed(conn, models=(), **PERMISSIVE)) == item_ids(listed(conn, **PERMISSIVE))
+    assert item_ids(listed(conn, models=("R640", "R640"), **PERMISSIVE)) == {DELL_R640[0]}
+    # Vendor AND models: models of other OEMs match nothing; same-OEM models remain.
+    assert listed(conn, vendor="Dell", models=("HPE DL360 Gen10",), **PERMISSIVE) == []
+    assert item_ids(listed(conn, vendor="Dell", models=("R640", "HPE DL360 Gen10"), **PERMISSIVE)) == {DELL_R640[0]}
+    # Other filters still apply to every selected model (HPE DL360 Gen10 is 1U; DL380 Gen10 is 2U).
+    assert item_ids(listed(conn, models=("HPE DL360 Gen10", "HPE DL380 Gen10"), **PERMISSIVE)) == {HPE_DL360_G10[0]}
+    # A hostile model value is only ever a bound parameter.
+    assert listed(conn, models=("R640'; DROP TABLE listings; --",), **PERMISSIVE) == []
 
 
 def test_facets_expose_vendor_scoped_models_and_generations(conn):

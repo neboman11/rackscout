@@ -169,7 +169,7 @@ def test_filter_defaults_are_modern_floor_for_all_oems():
     from rackscout import queries
 
     f = queries.Filters()
-    assert (f.vendor, f.model, f.generation, f.modern_only) == (None, None, None, True)
+    assert (f.vendor, f.models, f.generation, f.modern_only) == (None, (), None, True)
     assert (f.height, f.min_ram, f.min_bays, f.diskless, f.hide_damaged, f.include_leads) == (1, 16, 4, True, True, True)
 
 
@@ -196,9 +196,28 @@ def test_api_filter_parsing_vendor_generation_and_modern_only():
     with pytest.raises(HTTPException) as exc:
         parse_filters(vendor="Acme")
     assert exc.value.status_code == 422
-    assert parse_filters(model="Supermicro SYS-2028U-E1CNRT+").model == "Supermicro SYS-2028U-E1CNRT+"
+    assert parse_filters(model=["Supermicro SYS-2028U-E1CNRT+"]).models == ("Supermicro SYS-2028U-E1CNRT+",)
     with pytest.raises(HTTPException):
-        parse_filters(model="R640; DROP")
+        parse_filters(model=["R640; DROP"])
+
+
+def test_api_model_parameter_is_repeated_trimmed_deduplicated_and_bounded():
+    from fastapi import HTTPException
+
+    from rackscout.api import parse_filters
+
+    assert parse_filters(model=["R640", " R740 ", "R640", "", "R740"]).models == ("R640", "R740")
+    # One malformed entry rejects the whole request.
+    with pytest.raises(HTTPException) as exc:
+        parse_filters(model=["R640", "R740; DROP"])
+    assert exc.value.status_code == 422
+    assert len(parse_filters(model=[f"M{i}" for i in range(100)]).models) == 100
+    with pytest.raises(HTTPException) as exc:
+        parse_filters(model=[f"M{i}" for i in range(101)])
+    assert exc.value.status_code == 422
+    with pytest.raises(HTTPException) as exc:
+        parse_filters(model=["R640"] * 101)
+    assert exc.value.status_code == 422
 
 
 # ---------------------------------------------------------------------------

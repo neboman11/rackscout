@@ -20,6 +20,7 @@ from .domain import SUPPORTED_VENDORS, normalize_vendor
 log = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 +\-]{0,59}")
+MAX_MODELS = 100
 
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
@@ -99,7 +100,7 @@ def _bool(name: str, raw: str | None, default: bool) -> bool:
 
 def parse_filters(
     vendor: str | None = None,
-    model: str | None = None,
+    model: Annotated[list[str] | None, Query(max_length=MAX_MODELS)] = None,
     generation: str | None = None,
     modern_only: str | None = None,
     height: str | None = None,
@@ -124,9 +125,17 @@ def parse_filters(
     gen = _opt_int("generation", generation, None, 1, 100)
     if gen is not None and vendor_name is None:
         raise HTTPException(status_code=422, detail="generation is vendor-specific; select a vendor first")
-    model = (model or "").strip() or None
-    if model is not None and not MODEL_RE.fullmatch(model):
-        raise HTTPException(status_code=422, detail="invalid model")
+    if model is not None and len(model) > MAX_MODELS:
+        raise HTTPException(status_code=422, detail=f"at most {MAX_MODELS} model values may be supplied")
+    models: list[str] = []
+    for raw_model in model or []:
+        value = raw_model.strip()
+        if not value:
+            continue
+        if not MODEL_RE.fullmatch(value):
+            raise HTTPException(status_code=422, detail="invalid model")
+        if value not in models:
+            models.append(value)
     size = (drive_size or "").strip().upper() or None
     if size not in (None, "SFF", "LFF"):
         raise HTTPException(status_code=422, detail="drive_size must be SFF, LFF or empty")
@@ -145,7 +154,7 @@ def parse_filters(
     text = (q or "").strip() or None
     return queries.Filters(
         vendor=vendor_name,
-        model=model,
+        models=tuple(models),
         generation=gen,
         modern_only=_bool("modern_only", modern_only, True),
         height=_opt_int("height", height, 1, 1, 10),

@@ -6,7 +6,7 @@
 
 const DEFAULTS = {
   vendor: '',
-  model: '',
+  model: [],
   generation: '',
   height: '1',
   min_ram: '16',
@@ -23,7 +23,9 @@ const DEFAULTS = {
   sort: 'price',
   page: '1',
 };
-const SELECT_KEYS = ['vendor', 'model', 'generation', 'height', 'min_ram', 'min_bays', 'drive_size', 'cpu_count'];
+const SELECT_KEYS = ['vendor', 'generation', 'height', 'min_ram', 'min_bays', 'drive_size', 'cpu_count'];
+const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 +\-]{0,59}$/;
+const MAX_MODELS = 100;
 const CHECK_KEYS = ['diskless', 'hide_damaged', 'modern_only', 'confirmed_only', 'include_leads'];
 
 // Used only when /api/facets is unavailable; the backend facets are authoritative.
@@ -192,7 +194,7 @@ function readStateFromUrl() {
   const params = new URLSearchParams(window.location.search);
   const next = { ...DEFAULTS };
   for (const key of Object.keys(DEFAULTS)) {
-    if (params.has(key)) next[key] = params.get(key);
+    if (key !== 'model' && params.has(key)) next[key] = params.get(key);
   }
   for (const key of CHECK_KEYS) {
     next[key] = next[key] === 'false' ? 'false' : next[key] === 'true' ? 'true' : DEFAULTS[key];
@@ -206,15 +208,31 @@ function readStateFromUrl() {
     next[key] = /^\d+$/.test(raw) && Number.isSafeInteger(value) && value >= low && value <= high ? String(value) : DEFAULTS[key];
   }
   next.q = next.q.slice(0, 200);
+  next.model = normalizeModels(params.getAll('model'));
   if (!next.vendor) next.generation = '';
   if (next.max_total !== '' && !MAX_TOTAL_PATTERN.test(next.max_total)) next.max_total = '';
   return next;
+}
+
+function normalizeModels(values) {
+  const seen = new Set();
+  for (const value of values) {
+    const name = String(value).trim();
+    if (name === '' || !MODEL_PATTERN.test(name)) continue;
+    seen.add(name);
+    if (seen.size >= MAX_MODELS) break;
+  }
+  return [...seen];
 }
 
 function buildParams(includePage) {
   const params = new URLSearchParams();
   for (const key of Object.keys(DEFAULTS)) {
     if (key === 'page') continue;
+    if (key === 'model') {
+      for (const name of state.model) params.append('model', name);
+      continue;
+    }
     params.set(key, state[key]);
   }
   params.set('page', state.page);
@@ -241,17 +259,34 @@ function ensureOption(select, value) {
   }
 }
 
-function rebuildDependents(vendor, model, generation) {
-  const modelSelect = $('model');
+function selectedModels() {
+  return [...$('model-options').querySelectorAll('input[type="checkbox"]:checked')].map(box => box.value);
+}
+
+function updateModelSummary() {
+  const picked = selectedModels();
   const mv = facetData.model_vendors || {};
-  const models = (facetData.models || []).filter(name => !vendor || mv[name] === vendor);
-  const modelOptions = [el('option', { text: vendor ? 'All ' + vendor + ' models' : 'All models', attrs: { value: '' } })];
-  for (const name of models) {
-    modelOptions.push(el('option', { text: modelName(mv[name], name), attrs: { value: name } }));
-  }
-  modelSelect.replaceChildren(...modelOptions);
-  ensureOption(modelSelect, model);
-  modelSelect.value = model;
+  $('model-count').textContent = picked.length === 0 ? ($('vendor').value ? 'All ' + $('vendor').value + ' models' : 'All models') : plural(picked.length, 'model', 'models') + ' selected';
+  $('model-names').textContent = picked.map(name => modelName(mv[name], name)).join(', ');
+  $('model-clear').disabled = picked.length === 0;
+}
+
+function rebuildDependents(vendor, models, generation) {
+  const mv = facetData.model_vendors || {};
+  const available = (facetData.models || []).filter(name => !vendor || mv[name] === vendor);
+  const extras = models.filter(name => !available.includes(name));
+  const options = [...extras, ...available].map((name, index) => {
+    const id = 'model-opt-' + index;
+    const known = !extras.includes(name);
+    const box = el('input', { attrs: { type: 'checkbox', id, value: name } });
+    box.checked = models.includes(name);
+    return el('label', { className: 'multi-option', attrs: { for: id } }, [
+      box,
+      el('span', { text: modelName(mv[name], name) + (known ? '' : ' (not in current list)') }),
+    ]);
+  });
+  $('model-options').replaceChildren(el('legend', { className: 'sr-only', text: 'Models' }), ...options);
+  updateModelSummary();
 
   const genSelect = $('generation');
   const numbers = vendor ? ((facetData.generations_by_vendor || {})[vendor] || []) : [];
@@ -279,7 +314,7 @@ function applyStateToForm() {
   fillVendors(state.vendor);
   rebuildDependents(state.vendor, state.model, state.generation);
   for (const key of SELECT_KEYS) {
-    if (key === 'vendor' || key === 'model' || key === 'generation') continue;
+    if (key === 'vendor' || key === 'generation') continue;
     const select = $(key);
     ensureOption(select, state[key]);
     select.value = state[key];
@@ -299,6 +334,7 @@ function showMaxTotalError(message) {
 
 function readFormIntoState() {
   for (const key of SELECT_KEYS) state[key] = $(key).value;
+  state.model = selectedModels();
   for (const key of CHECK_KEYS) state[key] = $(key).checked ? 'true' : 'false';
   state.q = $('q').value.trim().slice(0, 200);
   state.sort = $('sort').value;
@@ -314,7 +350,8 @@ function readFormIntoState() {
 
 function onFilterChanged(event) {
   window.clearTimeout(debounceTimer);
-  if (event.target.id === 'vendor') rebuildDependents($('vendor').value, '', '');
+  if (event.target.id === 'vendor') rebuildDependents($('vendor').value, [], '');
+  if (event.target.closest && event.target.closest('#model-options')) updateModelSummary();
   const typing = event.target.matches('input[type="text"], input[type="search"]');
   debounceTimer = window.setTimeout(() => {
     const previousPage = state.page;
@@ -328,7 +365,7 @@ function onFilterChanged(event) {
 
 function resetFilters() {
   window.clearTimeout(debounceTimer);
-  state = { ...DEFAULTS };
+  state = { ...DEFAULTS, model: [] };
   applyStateToForm();
   pushUrl();
   loadListings();
@@ -376,26 +413,6 @@ async function loadListings() {
   }
 }
 
-function renderChips() {
-  const chips = [];
-  if (state.vendor) chips.push(state.vendor);
-  chips.push(state.vendor && state.generation ? generationLabel(state.vendor, state.generation) : 'Any generation');
-  chips.push(state.height ? state.height + 'U' : 'Any height');
-  if (state.model) chips.push(modelName((facetData.model_vendors || {})[state.model], state.model));
-  chips.push(state.modern_only === 'true' ? 'Dell 14G-era or newer' : 'All eras');
-  if (state.min_ram) chips.push('≥ ' + state.min_ram + ' GB RAM');
-  if (state.min_bays) chips.push('≥ ' + state.min_bays + ' bays');
-  if (state.drive_size) chips.push(state.drive_size);
-  if (state.cpu_count) chips.push(populatedLabel(Number(state.cpu_count)));
-  if (state.max_total) chips.push('≤ ' + (formatMoney(state.max_total) || state.max_total) + ' known total');
-  if (state.diskless === 'true') chips.push('No storage included');
-  if (state.hide_damaged === 'true') chips.push('Damaged hidden');
-  if (state.confirmed_only === 'true') chips.push('Confirmed only');
-  if (state.include_leads === 'true' && state.confirmed_only !== 'true') chips.push('Leads included');
-  if (state.q) chips.push('Search: ' + state.q);
-  $('chips').replaceChildren(...chips.map(text => el('span', { className: 'chip', text })));
-}
-
 function updateHeaders() {
   $('th-price').textContent = state.sort === 'price' ? 'Total USD ↑' : 'Total USD';
   $('th-benchmark').textContent = state.sort === 'benchmark' ? 'CPU Mark / CPU ↓' : 'CPU Mark / CPU';
@@ -423,7 +440,6 @@ function renderListings(data) {
   }
   $('summary-note').textContent = notes.join(' · ');
 
-  renderChips();
   updateHeaders();
 
   const table = $('table');
@@ -470,7 +486,7 @@ function buildRow(item) {
     attrs: {
       type: 'button',
       'data-id': String(item.id),
-      'aria-label': 'View ' + modelTitle(item) + ', ' + (item.ram_gb == null ? 'RAM unknown' : item.ram_gb + ' GB') + ', ' + (total || 'total unknown'),
+      'aria-label': 'View ' + modelTitle(item) + ', RAM ' + ramLabel(item) + ', ' + storageLabel(item) + ', ' + (total || 'total unknown'),
     },
   });
   const seller = [item.seller || 'Unknown seller', item.rack_units == null ? 'height unknown' : item.rack_units + 'U', item.condition || 'condition unknown'].join(' · ');
@@ -486,13 +502,13 @@ function buildRow(item) {
   ]);
 
   const ramCell = el('td', { className: 'mono' }, [
-    document.createTextNode(item.ram_gb == null ? 'Unknown' : item.ram_gb + ' GB'),
+    document.createTextNode(ramLabel(item)),
   ]);
 
   const baysText = item.drive_bays == null ? 'Unknown' : item.drive_bays + ' × ' + driveSizeLabel(item.drive_size, false);
   const baysCell = el('td', null, [
     el('span', { className: item.drive_bays != null && item.drive_bays >= 8 ? 'preferred' : '', text: baysText }),
-    small(storageLabel(item.storage_state)),
+    small(storageLabel(item)),
   ]);
 
   const row = el('tr', null, [
@@ -508,10 +524,23 @@ function buildRow(item) {
   return row;
 }
 
-function storageLabel(state) {
-  if (state === 'diskless') return 'No storage';
-  if (state === 'included') return 'Storage included';
-  return 'Storage unknown';
+function ramLabel(item) {
+  if (item.ram_state === 'conflicting') return 'Conflicting claims';
+  if (item.ram_gb != null && item.ram_gb > 0) return item.ram_gb + ' GB';
+  if (item.ram_gb === 0 && (item.ram_state === 'confirmed' || item.ram_state === 'inferred')) return 'Not included';
+  return 'Not stated';
+}
+
+function storageStatus(item) {
+  if (item.storage_conf === 'conflicting') return 'Conflicting claims';
+  if (item.storage_state === 'diskless' && (item.storage_conf === 'confirmed' || item.storage_conf === 'inferred')) return 'Not included';
+  if (item.storage_state === 'included') return 'Included';
+  return 'Not stated';
+}
+
+function storageLabel(item) {
+  const status = storageStatus(item);
+  return status === 'Conflicting claims' ? 'Storage: conflicting claims' : 'Storage ' + status.toLowerCase();
 }
 
 function benchmarkCell(item) {
@@ -597,7 +626,7 @@ async function loadFacets() {
     applyFacets(facets);
     const vendor = $('vendor').value;
     fillVendors(vendor);
-    rebuildDependents(vendor, $('model').value, $('generation').value);
+    rebuildDependents(vendor, selectedModels(), $('generation').value);
   } catch (error) {
     $('facet-message').textContent = 'Filter choices could not refresh. Existing choices remain available.';
     $('facet-error').hidden = false;
@@ -775,9 +804,9 @@ function renderDetail(item) {
   const list = el('dl');
   dlRow(list, 'Processors', item.cpu_model ? (item.cpu_count == null ? '?' : item.cpu_count) + '× ' + item.cpu_model + ' · ' + (item.total_cores == null ? 'cores unknown' : item.total_cores + ' installed cores') : 'Unknown');
   dlRow(list, 'Socket population', socketLabel(item) + ' — ' + populatedLabel(item.cpu_count));
-  dlRow(list, 'Memory', item.ram_gb == null ? 'Unknown' : item.ram_gb + ' GB');
+  dlRow(list, 'Memory', ramLabel(item));
   dlRow(list, 'Drive bays', item.drive_bays == null ? 'Unknown' : item.drive_bays + ' × ' + driveSizeLabel(item.drive_size, true));
-  dlRow(list, 'Storage included', item.storage_state === 'diskless' ? 'None' : item.storage_state === 'included' ? 'Yes' : 'Unknown');
+  dlRow(list, 'Storage', storageStatus(item));
   dlRow(list, 'Rack height', item.rack_units == null ? 'Unknown' : item.rack_units + 'U');
   dlRow(list, 'Vendor', item.vendor || 'Unknown');
   dlRow(list, 'Generation', item.generation_label || (item.vendor && item.generation != null ? generationLabel(item.vendor, item.generation) : 'Unknown'));
@@ -791,6 +820,7 @@ function renderDetail(item) {
   dlRow(list, 'Page verification', item.page_verification_current ? 'Current' : item.page_verified_at ? 'Not current — historical evidence only' : 'Never verified');
   dlRow(list, 'Page last verified', formatDate(item.page_verified_at) || 'Never');
   nodes.push(list);
+  nodes.push(el('p', { className: 'benchmark-note', text: 'Not stated means the listing does not say; it does not mean not included. Only Not included reflects confirmed or inferred absence.' }));
 
   nodes.push(benchmarkSection(item));
   nodes.push(evidenceSection(item));
@@ -935,6 +965,22 @@ function init() {
   $('empty-reset').addEventListener('click', resetFilters);
   $('retry').addEventListener('click', loadListings);
   $('facet-retry').addEventListener('click', loadFacets);
+  $('model-clear').addEventListener('click', event => {
+    for (const box of $('model-options').querySelectorAll('input:checked')) box.checked = false;
+    updateModelSummary();
+    $('model-picker').querySelector('summary').focus();
+    onFilterChanged(event);
+  });
+  document.addEventListener('click', event => {
+    const picker = $('model-picker');
+    if (picker.open && !picker.contains(event.target)) picker.open = false;
+  });
+  $('model-picker').addEventListener('keydown', event => {
+    if (event.key === 'Escape' && $('model-picker').open) {
+      $('model-picker').open = false;
+      $('model-picker').querySelector('summary').focus();
+    }
+  });
   $('prev').addEventListener('click', () => goToPage(-1));
   $('next').addEventListener('click', () => goToPage(1));
   $('status-refresh').addEventListener('click', loadStatus);

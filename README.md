@@ -12,6 +12,8 @@ Discovery covers Dell, HPE/HP, Supermicro, Lenovo and Cisco. Defaults are 1U, at
 
 The platform-era filter selects cataloged Dell 14G-era or newer hardware across vendors. Vendor generations are not interchangeable: HPE Gen10 is not Dell 10G, and Supermicro X11 is not a Dell generation. Select a vendor before selecting a generation. Disable the modern-platform filter to inspect older or unknown-era discoveries.
 
+The Model picker accepts multiple selections: a listing may match any selected model while still satisfying the other filters. Clear all model selections to remove that constraint. Shared URLs retain every selection as repeated `model` parameters.
+
 Catalog metadata establishes only cited chassis properties: vendor, generation, rack height and socket capacity. It never proves installed CPU count, RAM, bay backplane or PSU inclusion. Generic Supermicro motherboard/chassis descriptions do not establish a complete system model. Unknown values remain unknown.
 
 ## Source coverage and trust
@@ -31,6 +33,8 @@ Coverage is US-located eBay US Buy It Now inventory that ships within the US, wi
 Seller descriptions and bounded browser checks add evidence. No CAPTCHA solving, proxy rotation, user login or unsandboxed browser fallback. A challenge, source schema change or failed check is not empty inventory or proof that an item sold.
 
 Title RAM and starting prices are not verified configuration pairs. A listing titled 64GB can price its no-RAM option. Unverified/base-price leads are separate from matching configurations. Explicit missing operating essentials exclude a configuration; generic “tested” wording does not manufacture positive assertions for every component.
+
+RAM and storage distinguish **Not included** (explicit absence), **Not stated** (missing evidence) and **Conflicting claims**. Missing details never imply zero RAM or diskless storage. Coordinated exclusions such as “No HDD, RAM, NC” preserve the original evidence and establish missing RAM/storage without guessing what an unknown acronym means. Explicitly missing operating essentials remain excluded from both matches and leads.
 
 Shipping amounts are source quotes with an unconfirmed destination, not delivered prices for your postcode. Browser delivery preferences do not obtain a new quote when the source cannot provide one. Unknown shipping is not zero; unknown totals cannot satisfy a maximum-total filter as matches. Tax and import charges are excluded.
 
