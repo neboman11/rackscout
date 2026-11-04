@@ -14,7 +14,7 @@ services:
       timeout: 3s
       retries: 20
   migrate:
-    image: localhost/rackscout:0.6.0
+    image: localhost/rackscout:0.7.0
     build: .
     command: [python, -m, rackscout, migrate]
     environment: &database-env
@@ -30,7 +30,7 @@ services:
     read_only: true
     tmpfs: [/tmp]
   web:
-    image: localhost/rackscout:0.6.0
+    image: localhost/rackscout:0.7.0
     build: .
     environment:
       <<: *database-env
@@ -44,7 +44,7 @@ services:
     read_only: true
     tmpfs: [/tmp]
   collect:
-    image: localhost/rackscout:0.6.0
+    image: localhost/rackscout:0.7.0
     build: .
     command: [python, -m, rackscout, collect]
     environment: *database-env

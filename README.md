@@ -112,10 +112,10 @@ An unset dataset path leaves existing database references unchanged; a fresh dat
 
 ## Containers and publication
 
-`Dockerfile` uses the Playwright 1.58.0 Python image matching the pinned dependency. The runtime is non-root; production workloads use a read-only root filesystem, writable temporary storage, no Kubernetes API token and no-new-privileges. No host credentials or Docker socket are mounted.
+`Dockerfile` uses the Playwright 1.64.1 Python image matching the pinned dependency. The runtime is non-root; production workloads use a read-only root filesystem, writable temporary storage, no Kubernetes API token and no-new-privileges. No host credentials or Docker socket are mounted.
 
 ```sh
-podman build -t localhost/rackscout:0.6.0 .
+podman build -t localhost/rackscout:0.7.0 .
 ```
 
 `compose.yaml` provides PostgreSQL, migration, web and on-demand collection. Export a strong `POSTGRES_PASSWORD` before starting it. Web binds to localhost.
@@ -125,7 +125,7 @@ podman compose up --build -d web
 podman compose --profile collector run --rm collect
 ```
 
-Do not destroy database volumes unless you explicitly intend data loss. Browser-enabled collectors add only `SYS_CHROOT` to the otherwise dropped capabilities; web and migration retain none. A failed Chromium sandbox is reported as failed enrichment, never worked around with `--no-sandbox`, privileged mode, `SYS_ADMIN` or unconfined seccomp.
+Do not destroy database volumes unless you explicitly intend data loss. Kubernetes collectors drop every capability and use the scoped seccomp profile described below; web and migration retain RuntimeDefault. A failed Chromium sandbox is reported as failed enrichment, never worked around with `--no-sandbox`, privileged mode, `SYS_ADMIN` or unconfined seccomp. The local Compose example does not provision this Kubernetes profile; browser launch still requires compatible local runtime policy.
 
 GitHub Actions runs the PostgreSQL-backed suite before publishing an image tagged with the exact source commit SHA. Pull requests have read-only permissions and cannot publish. Only the main-branch publication job receives package-write permission.
 
@@ -160,7 +160,16 @@ Private route: `http://rackscout.apartment` through the existing `local-gateway`
 
 Resources include CNPG PostgreSQL (one instance, 5Gi replicated Mayastor storage), migration Job, web Deployment/Service, isolated manual-refresh worker sidecar and daily collection CronJob. The worker uses the same immutable image, its own resources and temporary volume, a 30-minute collection deadline, and no Kubernetes API token or Job-creation permissions. The home ApplicationSet excludes RackScout. Database resources are protected from Argo prune/deletion; that is not a backup strategy.
 
-The apartment browser remains disabled: offline probes observed user-namespace creation denied (EPERM) under the intended RuntimeDefault, non-root, no-new-privileges policy, including a pod-user-namespace probe. No compatible RuntimeClass is installed. Seccomp is the likely blocker, inferred from syscall behavior rather than direct profile/audit inspection. HTTP discovery and seller-description enrichment remain enabled. Do not enable browser checks until a sandboxed launch works; no unsandboxed or weakened-policy fallback is permitted.
+Browser-enabled collectors use `collector.browserSeccompProfile: rackscout/chromium-5cce89ebf72d3863.json`. This immutable amd64 profile preserves containerd 2.4.2's empty-capability default policy except for allowing `clone`, `setns`, `unshare` and `chroot`. Collectors retain UID/GID 1000, zero capabilities, no-new-privileges and Chromium's namespace/renderer seccomp sandbox. Web and migration use RuntimeDefault. No node-wide seccomp relaxation or runtime restart is required.
+
+The chart schedules browser collectors only on nodes labelled `rackscout-browser-profile=5cce89ebf72d3863`. Rebuild and review the baseline when changing containerd version, architecture or relevant kernel behavior; do not reuse a stale policy blindly. Source challenges remain blocked/backed off rather than bypassed. Enabling the runtime does not guarantee that a marketplace permits verification.
+
+Profile installation is an explicit, temporary operation, not a continuously privileged controller:
+
+1. Immediately before submitting a worker's bootstrap Job, run `application/rackscout/files/seccomp/preflight.py` **on that exact host through trusted SSH**, passing its Kubernetes node name. It makes no changes. It rejects symlink/non-directory ancestors, unsafe ownership/write permissions and access/default ACLs; root-group-writable ancestors additionally require root-only primary and supplementary membership. An unavailable check or failed host identity prevents submission. Host-root adversaries are outside this procedure's threat model.
+2. Render the GitOps chart with a published immutable image, the profile above, `browserProfileBootstrap.enabled=true`, and explicit `browserProfileBootstrap.nodes`. Server-dry-run and apply **only** resources labelled `app.kubernetes.io/component=browser-profile-bootstrap`, not the full application render. Normal values keep bootstrap disabled.
+3. Installer init containers temporarily use UID 0, but remain unprivileged, capability-free, read-only-root, without service-account tokens or network access. Their only writable host mount is `/var/lib/kubelet/seccomp/rackscout`. Installation verifies the pinned baseline and exact profile hash, refuses unsafe/existing different files and is idempotent.
+4. Require each Job's non-root offline probe to execute JavaScript and attest zero capabilities, no-new-privileges, nested renderer PID namespaces and an additional renderer seccomp filter before labelling its node. Remove the temporary Jobs, ConfigMap and deny-all NetworkPolicy afterward; retain the installed profile and label. Enable `collector.browserEnabled` only after these probes pass.
 
 Private benchmark references are supplied through the existing Secret named by `benchmarks.existingSecret`, mounted read-only at `/etc/rackscout/benchmarks.json`. Secret data is not stored in Git or the image. Keep the permitted source dataset in your own secure configuration/backup system.
 

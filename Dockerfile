@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/playwright/python:v1.58.0-noble AS dependencies
+FROM mcr.microsoft.com/playwright/python:v1.64.1-noble AS dependencies
 
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
