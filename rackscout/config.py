@@ -119,6 +119,8 @@ class Settings:
     refresh_origins: tuple[str, ...] = ()
     # Minimum time between accepted manual refresh requests.
     refresh_cooldown_seconds: int = 3600
+    # Exact browser origins allowed to save manual configurations; independent of collection.
+    edit_origins: tuple[str, ...] = ()
 
 
 def load_settings() -> Settings:
@@ -144,6 +146,7 @@ def load_settings() -> Settings:
         migrate_wait_seconds=_int("RACKSCOUT_MIGRATE_WAIT_SECONDS", 180, 0, 3600),
         refresh_origins=_origins("RACKSCOUT_REFRESH_ORIGINS"),
         refresh_cooldown_seconds=_int("RACKSCOUT_REFRESH_COOLDOWN_SECONDS", 3600, 60, 7 * 24 * 3600),
+        edit_origins=_origins("RACKSCOUT_EDIT_ORIGINS"),
     )
 
 

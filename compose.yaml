@@ -14,7 +14,7 @@ services:
       timeout: 3s
       retries: 20
   migrate:
-    image: localhost/rackscout:0.1.0
+    image: localhost/rackscout:0.5.0
     build: .
     command: [python, -m, rackscout, migrate]
     environment: &database-env
@@ -30,9 +30,11 @@ services:
     read_only: true
     tmpfs: [/tmp]
   web:
-    image: localhost/rackscout:0.1.0
+    image: localhost/rackscout:0.5.0
     build: .
-    environment: *database-env
+    environment:
+      <<: *database-env
+      RACKSCOUT_EDIT_ORIGINS: ${RACKSCOUT_EDIT_ORIGINS:-}
     ports: ["127.0.0.1:8080:8080"]
     depends_on:
       migrate:
@@ -42,7 +44,7 @@ services:
     read_only: true
     tmpfs: [/tmp]
   collect:
-    image: localhost/rackscout:0.1.0
+    image: localhost/rackscout:0.5.0
     build: .
     command: [python, -m, rackscout, collect]
     environment: *database-env

@@ -45,6 +45,11 @@ All listed fields always present unless noted. Unknown values null, NOT zero. Mo
  item_id: string,
  variant_id: string|null,
  variant_label: string|null,
+ origin: "source"|"manual",
+ revision: number,
+ essential_states: {[key:string]:"confirmed"|"present"|"unknown"|"missing"|"review"}|null,
+ next_check_after: string|null,
+ manual: {source_configuration_id:number,revision:number,created_at:string,updated_at:string,fields:[string],notes:string,price_confirmed:boolean,source_changed:boolean}|null,
  title: string,
  vendor: "Dell"|"HPE"|"Supermicro"|"Lenovo"|"Cisco"|null,   // null = unknown OEM
  model: string|null,              // Dell keeps bare PowerEdge keys (R640); others vendor-qualified ("HPE DL360 Gen10", "Supermicro SYS-1029U-TR4", "Lenovo SR630", "Cisco UCS C220 M5"); null when no system model is identifiable
@@ -66,7 +71,7 @@ All listed fields always present unless noted. Unknown values null, NOT zero. Mo
  hardware_state: "confirmed"|"review"|"missing"|"damaged",
  damage: boolean|null,
  price_kind: "exact"|"base"|"range"|"unknown",
- offer: {kind:"configuration"|"historical_configuration"|"multiple_options"|"unverified", price_is_starting:boolean, specification_price_paired:boolean, evidence:[string]},
+ offer: {kind:"configuration"|"historical_configuration"|"manual_configuration"|"multiple_options"|"unverified", price_is_starting:boolean, specification_price_paired:boolean, evidence:[string]},
  item_price: string|null,
  shipping_price: string|null,
  quoted_total: string|null,
@@ -101,3 +106,57 @@ Page verification expires at query time after its recorded verification window (
 `rackscout.sources.parse_index(html: str) -> IndexSnapshot`, snapshot has `.records: list[dict]`, `.updated_at` timezone-aware datetime. Record has `item_id`, `title`, `source_url`, `cpu_model`, `cpu_count`, `source_ram_gb`, `item_price: Decimal`, `shipping_price: Decimal|None`, `vendor` (canonical, HP→HPE, unknown brand → null), raw `brand`, and `model` (normalized key as in the listing shape; Supermicro system IDs come from the title because the Supermicro page's model column is only the brand) minimum. Full cfg/d payload parsing. `SourceError` is public exception for challenge/schema failures. The collector adds `index_url` (the vendor page) to stored records.
 
 `rackscout.sources.parse_description(html: str) -> dict` extracts explicit claims with fields `ram_gb` (integer|null), `storage_state`, `exclusions` list and other fields as useful. Descriptions containing options do not automatically validate selected variant RAM. No script/style text returned as evidence. Recognize no RAM/0GB and no HDD/drives independently; don't equate no drives with no drive backplane. Caller combines source, title and description conservatively.
+
+## Manual configurations and selected-listing refresh
+
+Approved behavior: edit a chosen row, save multiple explicit configuration/price pairs as separate rows, preserve manual work across collection, keep original evidence, remove manual copies to return to source data. No Cartesian expansion. Manual values participate in server-side filtering, sorting and pagination. A manual quote is never browser verification.
+
+### Persistence and derivation
+
+Migration 004 adds `origin` (`source` default or `manual`), `source_configuration_id`, structured `essential_states`, `manual_data`, positive integer `revision` (default 1), `manual_created_at`, and `manual_updated_at` to configurations. Source rows have no manual parent/metadata; manual rows reference a source configuration on the same listing and use server-generated `manual:<uuid>` keys with no marketplace variant ID. A partial index supports active manual children. Existing IDs, source records and history are retained.
+
+Manual rows materialize typed effective values in the existing columns, not JSON overlays at query time. `manual_data` retains the immutable original baseline (configuration values, structured essentials, evidence, warnings and exclusions), explicit fields, their server-generated timestamps, price-pair assertion and notes. Source rows remain pristine. The collector only upserts/deactivates source-origin configurations, persists the domain builder's structured essentials, and increments source revision; it never rewrites manual children. Reconstruct legacy null essentials with the same pure domain builder and exact variant key, never by interpreting warning prose. Unknown reconstruction cannot erase a pre-existing missing/damage blocker.
+
+Hide a source configuration from inventory whenever an active manual child exists, before filtering/counting/pagination and independently of whether that child passes filters. Manual children remain when source variants deactivate, but an ended/archived listing is excluded. Editor/detail/source reads bypass source-hiding. Removing the last child exposes the source only if it remains active/live.
+
+Copied facts retain their source confidence. Only explicit assertions get manual evidence. Essential keys are `cpu`, `ram`, `psu`, `cooling`, `nic`, `drive_path`; source states include `confirmed`, inferred `present`, `unknown`, `missing` and `review`. Manual presence assertions become `confirmed`, not independent/browser verification. Missing essentials are hard exclusions. Confirmed-hardware filtering requires all essentials confirmed, whether asserted by source evidence or the user; manual origin remains prominently identified. CPU edits update the normalized benchmark key and invalidate borrowed core totals unless explicitly supplied. Model edits must select a catalog model from the same vendor, and effective CPU count must fit that model.
+
+### Editor service and HTTP
+
+Backend module `rackscout.manual` supplies `parse_write(payload)`, `editor(conn, configuration_id)`, `create(conn, configuration_id, parsed) -> new_id`, `update(conn, configuration_id, parsed) -> id`, and `delete(conn, configuration_id, revision) -> {deleted_id, source_id}`. Errors: `ManualValidationError` (422), `ManualNotFound` (404), `ManualConflict` (409). All writes lock listing then configuration, check revision atomically, and bound database waits. Maximum 100 active manual configurations per listing.
+
+Write body: `{revision: positive integer, label: nonempty string <=120, notes: string <=2000, fields: object, price_confirmed: boolean}`. `fields` is the complete set of explicit overrides; omitted keys use the saved original baseline, and null clears a value. Unknown keys/types, non-finite money, more than two fractional decimal digits, invalid Unicode/NUL, incompatible model/vendor and out-of-range values are 422 before database access where possible. Money uses decimal strings, never floats. Monetary range 0..99999999.99.
+
+Allowed fields: `model` (catalog key/null), `cpu_model` (text <=100/null), `cpu_count` (1..8/null), `total_cores` (1..8192/null), `ram_gb` (0..1048576/null), `drive_bays` (1..128/null), `drive_size` (SFF/LFF/null), `storage_state` (diskless/included/unknown), `cpu_included`, `psu`, `cooling`, `nic`, `drive_path` (each present/missing/unknown), `damage` (boolean/null), `item_price`, `shipping_price` (decimal strings/null).
+
+GET `/api/listings/{id}/manual` is read-only and returns `{enabled, configuration_id, source_configuration_id, revision, label, notes, fields, values, price_confirmed, original, configurations}`. `values` contains editable effective values and component inclusion states; `fields` contains only explicit overrides. `original` is the baseline source information. `configurations` is the active manual sibling summary list with id, label, revision, RAM, item/shipping price and price-pair status.
+
+POST `/api/listings/{id}/manual` creates one manual child from the selected source/manual row (root source parent retained), returns 201 `{item: Listing}`. PATCH the same path updates a manual row only, returns 200 `{item: Listing}`. DELETE accepts exactly `{revision}` and removes a manual row only, returning 200 `{deleted_id, source_id}`. Stale revisions return 409 without mutation. Source deletion/updates through these endpoints are prohibited.
+
+Manual writes require `RACKSCOUT_EDIT_ORIGINS` exact origin allowlist, matching Origin, Sec-Fetch-Site same-origin if supplied, `X-RackScout-Edit: 1`, application/json, and at most 32768 streamed bytes checked before accumulation. Empty origins disable writes. These checks and payload validation precede DB access. Other methods/paths remain blocked; existing GET connections remain read-only. This is trusted-LAN CSRF protection, not authentication.
+
+Listing metadata adds `origin`, `revision`, `essential_states`, `next_check_after` and `manual` (null for source, otherwise `{source_configuration_id, revision, created_at, updated_at, fields:[names], notes, price_confirmed, source_changed}`). Detail/editor retains original evidence. Browser verification applies only to source rows.
+
+### Manual price semantics
+
+Explicit `price_confirmed` plus a numeric price asserts that quote for this configuration. It produces offer kind `manual_configuration`, a precise price and filter eligibility without page verification. UI says manually entered/not independently verified, never browser-verified. Unknown shipping remains null; free shipping requires explicit zero. Do not silently carry shipping from another option into a newly entered configuration price.
+
+Without that assertion, keep only a clearly unpaired source starting quote or unknown price; never borrow a source exact option price for changed hardware as a paired price or invent a lower bound. Editing configuration-defining fields clears the UI price-confirmation checkbox until deliberately rechecked. Backend only honors an explicit assertion for the submitted configuration. Manual timestamps and source changes remain visible rather than overwriting the saved quote.
+
+### Selected-listing fetch
+
+POST `/api/listings/{id}/refresh` accepts `{}` with the existing refresh Origin/header/body protections. It resolves a configuration to its marketplace listing; no arbitrary URL. It shares the existing global refresh queue, collector lock, one-hour acceptance cooldown, request pacing and origin backoff. Per-listing `next_check_after` also applies; a cooling target returns 429/Retry-After without consuming the queue/global cooldown, missing/inactive targets return 404.
+
+Migration 005 adds nullable `refresh_control.target_listing_id` (FK RESTRICT); null means whole inventory. Refresh status adds `scope` (all/listing) and `target_item_id` (marketplace ID/null). Global admission resets target to null. Interrupted/shutdown handling preserves request scope; never replay or escalate a selected request to global work.
+
+`collector.run_collection(..., *, target_listing_id=None)` and `run_enrichment(..., *, target_listing_id=None)` preserve default behavior. A selected run skips discovery, considers only that due active listing, performs at most one normal enrichment within the configured budget, and does not change discovery freshness. Missing/ended/archived/cooling queued targets fetch nothing. Existing description cache and backoff remain active. `CollectionResult.discovery` is skipped for this path; terminal state honestly reflects enrichment. Source recomputation cannot overwrite manual rows.
+
+### Build order and verification
+
+1. Write behavioral regressions for manual rows and selected fetching; observe missing behavior before implementation.
+2. Add manual schema/service/query integration; parent integrates collector persistence guards and structured essentials.
+3. Add protected CRUD and selected-fetch API admission; build the editor, per-configuration controls and progress UI against these interfaces.
+4. Run complete isolated-PostgreSQL suite once integration settles, independent code/security reviews, then exercise real web CRUD/filtering/price pairing/reload/reset and a bounded selected fetch. Verify no source or sibling/manual overwrite and no extra index fetch.
+5. Update existing docs, publish immutable image and chart version, deploy to apartment and verify actual surface/rollout.
+
+Browser investigation: actual offline probes observed user-namespace creation denied (EPERM) under RuntimeDefault with the intended non-root/no-new-privileges policy, including a pod-user-namespace probe; no RuntimeClass is available. Seccomp attribution is an inference without direct profile/audit inspection. Keep browser verification disabled; no unsandboxed, privileged, unconfined, SYS_ADMIN or host-policy-weakening workaround.

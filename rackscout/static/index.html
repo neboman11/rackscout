@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
 <title>RackScout — used rack server finder</title>
-<link rel="stylesheet" href="/static/app.css?v=0.4.2">
-<script src="/static/app.js?v=0.4.2" defer></script>
+<link rel="stylesheet" href="/static/app.css?v=0.5.0">
+<script src="/static/app.js?v=0.5.0" defer></script>
 </head>
 <body>
 <a href="#inventory" class="sr-only">Skip to inventory</a>
@@ -139,9 +139,10 @@
   </div>
 </main>
 <dialog id="detail" aria-labelledby="detail-title">
-  <div class="dialog-head"><h2 id="detail-title">Listing details</h2><button class="close" id="close" type="button" autofocus>Close</button></div>
+  <div class="dialog-head"><h2 id="detail-title" tabindex="-1">Listing details</h2><button class="close" id="close" type="button" autofocus>Close</button></div>
+  <div id="detail-notice" class="detail-notice" role="status" aria-live="polite" hidden></div>
   <div class="dialog-body" id="detail-body"></div>
-  <div class="dialog-foot">Index-derived record, not a current availability check. A seller claim is not an independent hardware test.</div>
+  <div class="dialog-foot">Index-derived record, not a current availability check. A seller claim is not an independent hardware test. Manual configurations are values you entered; they are never browser-verified.</div>
 </dialog>
 </body>
 </html>

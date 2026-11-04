@@ -44,6 +44,21 @@ RAM and storage distinguish **Not included** (explicit absence), **Not stated** 
 
 Shipping amounts are source quotes with an unconfirmed destination, not delivered prices for your postcode. Browser delivery preferences do not obtain a new quote when the source cannot provide one. Unknown shipping is not zero; unknown totals cannot satisfy a maximum-total filter as matches. Tax and import charges are excluded.
 
+## Manual configurations
+
+Open a row and choose **Edit details** to fill in specifications, included/missing components, an option label, notes and prices. Saving a source row creates a separate **Manually entered** copy; original source facts and evidence remain available. Untouched prefills keep their source confidence. Use **Use as manual** to explicitly affirm an unchanged value, or **Reset to source** to remove that field's manual assertion.
+
+**Add configuration** creates another independent option for the same marketplace listing. Enter each RAM/CPU/component combination and its own item/shipping price; RackScout never generates combinations by mixing unrelated options. A new option does not inherit another option's price or shipping. Check the price-confirmation box only after checking that exact configuration; changing hardware clears it. Blank shipping is unknown, and explicit zero means free shipping.
+
+Manual rows participate in filtering, sorting and pagination, with their own prices and matched CPU references. Manual quotes are labelled as entered by you, never browser-verified. Original source rows stay hidden while manual copies exist, even if the copies are filtered out, so a cheap base quote cannot reappear as a matching configuration. Removing the last copy restores the latest source row only if it is still active. Separate marketplace variants are unaffected.
+
+Entries survive automatic collection. Recorded dates and source-change warnings stay visible; collection cannot overwrite your values. Stale concurrent saves return a conflict and retain the draft rather than overwriting another edit. Pending saves freeze controls; completing a fetch does not discard an open draft. At most 100 active manual configurations are allowed per listing.
+
+Manual writes require the exact-origin allowlist `RACKSCOUT_EDIT_ORIGINS`, independently of collection permissions. For local development, use `http://localhost:8080,http://127.0.0.1:8080`; an empty value disables editing. Compose forwards this optional setting to the web service. Apartment enables it through `manualEditing.enabled`. All permitted private-LAN clients share the same saved entries; this is not per-user authentication.
+
+**Fetch seller details** requests enrichment of that listing only, without fetching vendor index pages. It shares the global one-hour manual-refresh cooldown, six-hour listing cooldown, request pacing, description cache and source backoff. A queued worker performs the request; the web process does not scrape. Results can be cached, partial or blocked, and never overwrite manual configurations. Browser-disabled fetching can add seller-described specifications, but cannot reliably enumerate marketplace option prices.
+
+
 ## Local development
 
 Requirements: Python 3.12+, [uv](https://docs.astral.sh/uv/), PostgreSQL 16+, optionally Playwright Chromium for page verification.
@@ -89,7 +104,7 @@ An unset dataset path leaves existing database references unchanged; a fresh dat
 `Dockerfile` uses the Playwright 1.58.0 Python image matching the pinned dependency. The runtime is non-root; production workloads use a read-only root filesystem, writable temporary storage, no Kubernetes API token and no-new-privileges. No host credentials or Docker socket are mounted.
 
 ```sh
-podman build -t localhost/rackscout:0.4.2 .
+podman build -t localhost/rackscout:0.5.0 .
 ```
 
 `compose.yaml` provides PostgreSQL, migration, web and on-demand collection. Export a strong `POSTGRES_PASSWORD` before starting it. Web binds to localhost.
@@ -114,6 +129,7 @@ Automatic collection runs once daily at **04:00 UTC** (`0 4 * * *`). The **Refre
 - `RACKSCOUT_BENCHMARKS_FILE`: optional privately provisioned reference JSON file.
 - `RACKSCOUT_REFRESH_ORIGINS`: exact comma-separated origins allowed to request manual collection; empty disables manual requests.
 - `RACKSCOUT_REFRESH_COOLDOWN_SECONDS`: persisted manual-request cooldown; default 3600 seconds.
+- `RACKSCOUT_EDIT_ORIGINS`: exact comma-separated origins allowed to save manual configurations; empty disables editing independently of manual collection.
 
 Discovery pages and origins are fixed/allowlisted, not user-supplied scrape URLs. `GET /api/refresh` only reads stored/control state; `POST /api/refresh` accepts an empty JSON object with the same-origin application header. The web process only queues work; a separate `python -m rackscout refresh-worker` process performs collection without Kubernetes API credentials. Restarted workers retain queued requests and mark interrupted running requests failed rather than replaying them.
 
@@ -123,7 +139,7 @@ At the default budget, up to 12 checks go to cheap previously verified target sy
 
 Source freshness is separate from local fetch time. Re-fetching an unchanged old snapshot does not make it fresh. Valid-source disappearance is not confirmed sold; absence-based archival requires seven days and a complete applicable vendor snapshot. Price history is retained for 90 days.
 
-Manual refresh is intended only for a trusted private LAN. Origin/header checks protect against browser cross-site requests, not untrusted clients that forge headers. Do not expose the control publicly without authentication. Daily collection reduces request volume, not the risk of provider restrictions or the need for permission. Source freshness/verification expiry remain explicit; the daily schedule does not make old data current.
+Manual refresh and editing are intended only for a trusted private LAN. Origin/header checks protect against browser cross-site requests, not untrusted clients that forge headers. Do not expose these controls publicly without authentication. Daily collection reduces request volume, not the risk of provider restrictions or the need for permission. Source freshness/verification expiry remain explicit; the daily schedule does not make old data current.
 
 ## Apartment deployment
 
@@ -133,8 +149,10 @@ Private route: `http://rackscout.apartment` through the existing `local-gateway`
 
 Resources include CNPG PostgreSQL (one instance, 5Gi replicated Mayastor storage), migration Job, web Deployment/Service, isolated manual-refresh worker sidecar and daily collection CronJob. The worker uses the same immutable image, its own resources and temporary volume, a 30-minute collection deadline, and no Kubernetes API token or Job-creation permissions. The home ApplicationSet excludes RackScout. Database resources are protected from Argo prune/deletion; that is not a backup strategy.
 
-The apartment browser is disabled because an actual sandbox probe failed under current node/runtime policy, even with `SYS_CHROOT`. HTTP discovery and seller-description enrichment remain enabled. Do not enable browser checks until a sandboxed launch works under the intended policy; do not weaken that policy.
+The apartment browser remains disabled: offline probes observed user-namespace creation denied (EPERM) under the intended RuntimeDefault, non-root, no-new-privileges policy, including a pod-user-namespace probe. No compatible RuntimeClass is installed. Seccomp is the likely blocker, inferred from syscall behavior rather than direct profile/audit inspection. HTTP discovery and seller-description enrichment remain enabled. Do not enable browser checks until a sandboxed launch works; no unsandboxed or weakened-policy fallback is permitted.
 
 Private benchmark references are supplied through the existing Secret named by `benchmarks.existingSecret`, mounted read-only at `/etc/rackscout/benchmarks.json`. Secret data is not stored in Git or the image. Keep the permitted source dataset in your own secure configuration/backup system.
 
 Deploy only a published immutable image reference. Verify `/ready`, collection Job logs, each vendor's freshness/status, actual database inventory, real filters/details and the private route. Never delete existing cluster PVCs to recover this app.
+
+Upgrading from a release without manual-row collector guards requires a clean cutover. The chart uses Recreate for web/worker; drain old-image CronJob collectors too before enabling manual writes. Do not let an old collector run against newly created manual rows.

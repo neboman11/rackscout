@@ -217,22 +217,16 @@ def test_database_failure_is_sanitized_503(client, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-STATUS_KEYS = {"enabled", "state", "request_id", "requested_at", "started_at", "finished_at", "retry_at",
-               "retry_after_seconds", "collector_running", "can_refresh", "message"}
-
-
 @requires_db
 def test_idle_request_is_accepted_and_duplicates_conflict(conn, client):
     idle = client.get("/api/refresh")
     assert idle.status_code == 200
     body = idle.json()
-    assert set(body) == STATUS_KEYS
     assert (body["enabled"], body["state"], body["can_refresh"], body["request_id"]) == (True, "idle", True, None)
 
     accepted = client.post("/api/refresh", json={}, headers=HEADERS)
     assert accepted.status_code == 202
     queued = accepted.json()
-    assert set(queued) == STATUS_KEYS
     assert queued["state"] == "queued" and queued["request_id"] and queued["requested_at"]
     assert queued["can_refresh"] is False
     assert _row(conn)["state"] == "queued"

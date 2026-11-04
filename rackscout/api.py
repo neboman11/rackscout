@@ -1,4 +1,4 @@
-"""Web API (read-only apart from the protected manual-refresh enqueue) and same-origin static frontend."""
+"""Web API with protected manual editing/collection and a same-origin static frontend."""
 from __future__ import annotations
 
 import json
@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
-from . import db, queries, refresh
+from . import db, manual, queries, refresh
 from .config import load_settings
 from .domain import SUPPORTED_VENDORS, normalize_vendor
 
@@ -25,6 +25,9 @@ MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 +\-]{0,59}")
 MAX_MODELS = 100
 REFRESH_PATH = "/api/refresh"
 MAX_REFRESH_BODY = 1024
+MAX_EDIT_BODY = 32768
+MANUAL_PATH_RE = re.compile(r"/api/listings/[0-9]+/manual")
+SELECTED_REFRESH_PATH_RE = re.compile(r"/api/listings/[0-9]+/refresh")
 
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
@@ -45,9 +48,14 @@ _settings = load_settings()
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next: Any) -> Any:
-    if request.method not in ("GET", "HEAD") and not (request.method == "POST" and request.url.path == REFRESH_PATH):
-        allow = "GET, HEAD, POST" if request.url.path == REFRESH_PATH else "GET, HEAD"
-        return JSONResponse({"detail": "Method not allowed"}, status_code=405, headers={**SECURITY_HEADERS, "Allow": allow})
+    allowed = ("GET", "HEAD")
+    if request.url.path == REFRESH_PATH or SELECTED_REFRESH_PATH_RE.fullmatch(request.url.path):
+        allowed = ("GET", "HEAD", "POST")
+    elif MANUAL_PATH_RE.fullmatch(request.url.path):
+        allowed = ("GET", "HEAD", "POST", "PATCH", "DELETE")
+    if request.method not in allowed:
+        return JSONResponse({"detail": "Method not allowed"}, status_code=405,
+                            headers={**SECURITY_HEADERS, "Allow": ", ".join(allowed)})
     response = await call_next(request)
     for key, value in SECURITY_HEADERS.items():
         response.headers.setdefault(key, value)
@@ -231,14 +239,21 @@ def refresh_status(conn: Conn) -> dict[str, Any]:
     return refresh.status(conn, _settings)
 
 
-def _enqueue_refresh() -> tuple[str, dict[str, Any]]:
+def _enqueue_refresh(configuration_id: int | None = None) -> tuple[str, dict[str, Any]]:
     try:
         conn = db.connect(_settings.db_connect_timeout)
     except db.DatabaseUnavailable:
         log.warning("database unavailable")
         raise HTTPException(status_code=503, detail="Database unavailable") from None
     try:
-        return refresh.enqueue(conn, _settings)
+        if configuration_id is None:
+            return refresh.enqueue(conn, _settings)
+        return refresh.enqueue(conn, _settings, configuration_id=configuration_id)
+    except refresh.ListingRefreshNotFound:
+        raise HTTPException(status_code=404, detail="Listing not found") from None
+    except refresh.ListingRefreshCooldown as exc:
+        raise HTTPException(status_code=429, detail="This listing was checked recently; try again after its cooldown.",
+                            headers={"Retry-After": str(exc.retry_after_seconds)}) from None
     except psycopg.Error as exc:
         log.error("refresh enqueue failed: %s", type(exc).__name__)
         raise HTTPException(status_code=503, detail="Database unavailable") from None
@@ -246,46 +261,150 @@ def _enqueue_refresh() -> tuple[str, dict[str, Any]]:
         conn.close()
 
 
-@app.post(REFRESH_PATH)
-async def request_refresh(request: Request) -> JSONResponse:
-    """Queue one manual collection. Only exact allowlisted origins; accepts no options.
-
-    Every request check runs before any database access; the API never scrapes.
-    """
-    allowed = _settings.refresh_origins
-    if not allowed:
-        raise HTTPException(status_code=403, detail="Manual refresh disabled")
-    if request.headers.get("origin") not in allowed:
+async def _mutation_body(request: Request, origins: tuple[str, ...], header: str, limit: int,
+                         disabled_message: str) -> dict[str, Any]:
+    """Reject cross-site, oversized and malformed writes before opening a database."""
+    if not origins:
+        raise HTTPException(status_code=403, detail=disabled_message)
+    if request.headers.get("origin") not in origins:
         raise HTTPException(status_code=403, detail="Cross-origin request rejected")
     site = request.headers.get("sec-fetch-site")
     if site is not None and site != "same-origin":
         raise HTTPException(status_code=403, detail="Cross-origin request rejected")
-    if request.headers.get("x-rackscout-refresh") != "1":
-        raise HTTPException(status_code=403, detail="Missing X-RackScout-Refresh header")
+    if request.headers.get(header) != "1":
+        raise HTTPException(status_code=403, detail=f"Missing {header} header")
     media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     if media_type != "application/json":
         raise HTTPException(status_code=415, detail="Content-Type must be application/json")
     declared = request.headers.get("content-length")
-    if declared is not None and (not declared.strip().isdigit() or int(declared) > MAX_REFRESH_BODY):
+    if declared is not None and (not re.fullmatch(r"[0-9]{1,10}", declared.strip()) or int(declared) > limit):
         raise HTTPException(status_code=413, detail="Request body too large")
     body = bytearray()
     async for chunk in request.stream():
-        if len(body) + len(chunk) > MAX_REFRESH_BODY:
+        if len(body) + len(chunk) > limit:
             raise HTTPException(status_code=413, detail="Request body too large")
         body.extend(chunk)
     try:
         payload = json.loads(body)
-    except ValueError:
-        raise HTTPException(status_code=422, detail="Body must be the JSON object {}") from None
-    if not isinstance(payload, dict) or payload:
-        raise HTTPException(status_code=422, detail="Manual refresh accepts no options; send {}")
+    except (ValueError, RecursionError):
+        raise HTTPException(status_code=422, detail="Body must be a JSON object") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Body must be a JSON object")
+    return payload
 
-    outcome, state = await run_in_threadpool(_enqueue_refresh)
+
+def _refresh_response(outcome: str, state: dict[str, Any]) -> JSONResponse:
     if outcome == "accepted":
         return JSONResponse(state, status_code=202)
     if outcome == "cooldown":
         return JSONResponse(state, status_code=429, headers={"Retry-After": str(state["retry_after_seconds"])})
     return JSONResponse(state, status_code=409)
+
+
+@app.post(REFRESH_PATH)
+async def request_refresh(request: Request) -> JSONResponse:
+    payload = await _mutation_body(request, _settings.refresh_origins, "X-RackScout-Refresh", MAX_REFRESH_BODY,
+                                   "Manual refresh disabled")
+    if payload:
+        raise HTTPException(status_code=422, detail="Manual refresh accepts no options; send {}")
+    return _refresh_response(*await run_in_threadpool(_enqueue_refresh))
+
+
+@app.post("/api/listings/{listing_id}/refresh")
+async def request_listing_refresh(listing_id: int, request: Request) -> JSONResponse:
+    payload = await _mutation_body(request, _settings.refresh_origins, "X-RackScout-Refresh", MAX_REFRESH_BODY,
+                                   "Manual refresh disabled")
+    if payload:
+        raise HTTPException(status_code=422, detail="Listing refresh accepts no options; send {}")
+    if not 0 < listing_id < 2**63:
+        raise HTTPException(status_code=404, detail="Listing not found")
+    if _settings.max_details <= 0:
+        raise HTTPException(status_code=403, detail="Detail fetching disabled: no detail-check budget configured")
+    return _refresh_response(*await run_in_threadpool(_enqueue_refresh, listing_id))
+
+
+def _valid_configuration_id(configuration_id: int) -> None:
+    if not 0 < configuration_id < 2**63:
+        raise HTTPException(status_code=404, detail="Configuration not found")
+
+
+def _manual_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, manual.ManualNotFound):
+        return HTTPException(status_code=404, detail="Configuration not found")
+    if isinstance(exc, manual.ManualConflict):
+        return HTTPException(status_code=409, detail=str(exc) or "Configuration changed; reload before saving")
+    return HTTPException(status_code=422, detail=str(exc) or "Invalid manual configuration")
+
+
+def _write_manual(operation: str, configuration_id: int, parsed: Any) -> dict[str, Any]:
+    try:
+        conn = db.connect(_settings.db_connect_timeout, autocommit=True)
+    except db.DatabaseUnavailable:
+        raise HTTPException(status_code=503, detail="Database unavailable") from None
+    try:
+        conn.execute("SET statement_timeout = '10s'")
+        conn.execute("SET lock_timeout = '10s'")
+        if operation == "delete":
+            return manual.delete(conn, configuration_id, parsed)
+        if operation == "create":
+            result_id = manual.create(conn, configuration_id, parsed)
+        else:
+            result_id = manual.update(conn, configuration_id, parsed)
+        item = queries.get_listing(conn, result_id)
+        if item is None:
+            raise HTTPException(status_code=409, detail="Listing changed; reload to view the saved configuration")
+        return {"item": item}
+    except (manual.ManualValidationError, manual.ManualNotFound, manual.ManualConflict) as exc:
+        raise _manual_error(exc) from None
+    except psycopg.Error as exc:
+        log.error("manual configuration write failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Database unavailable") from None
+    finally:
+        conn.close()
+
+
+@app.get("/api/listings/{listing_id}/manual")
+def manual_editor(listing_id: int, conn: Conn) -> dict[str, Any]:
+    _valid_configuration_id(listing_id)
+    try:
+        return {**manual.editor(conn, listing_id), "enabled": bool(_settings.edit_origins),
+                "fetch_enabled": bool(_settings.refresh_origins) and _settings.max_details > 0}
+    except (manual.ManualValidationError, manual.ManualNotFound, manual.ManualConflict) as exc:
+        raise _manual_error(exc) from None
+
+
+async def _manual_payload(request: Request, listing_id: int) -> Any:
+    payload = await _mutation_body(request, _settings.edit_origins, "X-RackScout-Edit", MAX_EDIT_BODY,
+                                   "Manual editing disabled")
+    _valid_configuration_id(listing_id)
+    try:
+        return manual.parse_write(payload)
+    except manual.ManualValidationError as exc:
+        raise _manual_error(exc) from None
+
+
+@app.post("/api/listings/{listing_id}/manual")
+async def create_manual(listing_id: int, request: Request) -> JSONResponse:
+    parsed = await _manual_payload(request, listing_id)
+    result = await run_in_threadpool(_write_manual, "create", listing_id, parsed)
+    return JSONResponse(result, status_code=201)
+
+
+@app.patch("/api/listings/{listing_id}/manual")
+async def update_manual(listing_id: int, request: Request) -> dict[str, Any]:
+    parsed = await _manual_payload(request, listing_id)
+    return await run_in_threadpool(_write_manual, "update", listing_id, parsed)
+
+
+@app.delete("/api/listings/{listing_id}/manual")
+async def delete_manual(listing_id: int, request: Request) -> dict[str, Any]:
+    payload = await _mutation_body(request, _settings.edit_origins, "X-RackScout-Edit", MAX_EDIT_BODY,
+                                   "Manual editing disabled")
+    _valid_configuration_id(listing_id)
+    revision = payload.get("revision")
+    if set(payload) != {"revision"} or type(revision) is not int or not 0 < revision < 2**63:
+        raise HTTPException(status_code=422, detail="Body must contain only a positive integer revision")
+    return await run_in_threadpool(_write_manual, "delete", listing_id, revision)
 
 
 @app.get("/", include_in_schema=False)

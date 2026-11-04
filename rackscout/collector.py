@@ -116,7 +116,8 @@ def recompute(conn: psycopg.Connection, row: dict[str, Any], catalog: dict[str, 
     existing = {
         r["variant_key"]: r
         for r in conn.execute(
-            "SELECT id, variant_key, item_price, shipping_price, price_kind, active FROM configurations WHERE listing_id = %s",
+            "SELECT id, variant_key, item_price, shipping_price, price_kind, active FROM configurations "
+            "WHERE listing_id = %s AND origin = 'source'",
             (row["id"],),
         ).fetchall()
     }
@@ -124,17 +125,17 @@ def recompute(conn: psycopg.Connection, row: dict[str, Any], catalog: dict[str, 
     for c in configs:
         keys.append(c["variant_key"])
         params = {**c, "listing_id": row["id"], "evidence": _json(c["evidence"]), "warnings": _json(c["warnings"]),
-                  "exclusions": _json(c["exclusions"])}
+                  "exclusions": _json(c["exclusions"]), "essential_states": _json(c["essential_states"])}
         cid = conn.execute(
             """INSERT INTO configurations (listing_id, variant_key, variant_id, variant_label, active, model, cpu_model, cpu_key,
                  cpu_model_state, cpu_count, cpu_count_state, total_cores, ram_gb, ram_state, drive_bays, bays_state, drive_size,
                  size_state, storage_state, storage_conf, hardware_state, damage, price_kind, item_price, shipping_price, currency,
-                 shipping_context, evidence, warnings, exclusions, observed_at)
+                 shipping_context, evidence, warnings, exclusions, essential_states, observed_at)
                VALUES (%(listing_id)s, %(variant_key)s, %(variant_id)s, %(variant_label)s, true, %(model)s, %(cpu_model)s, %(cpu_key)s,
                  %(cpu_model_state)s, %(cpu_count)s, %(cpu_count_state)s, %(total_cores)s, %(ram_gb)s, %(ram_state)s, %(drive_bays)s,
                  %(bays_state)s, %(drive_size)s, %(size_state)s, %(storage_state)s, %(storage_conf)s, %(hardware_state)s, %(damage)s,
                  %(price_kind)s, %(item_price)s, %(shipping_price)s, %(currency)s, %(shipping_context)s, %(evidence)s, %(warnings)s,
-                 %(exclusions)s, now())
+                 %(exclusions)s, %(essential_states)s, now())
                ON CONFLICT (listing_id, variant_key) DO UPDATE SET variant_id = EXCLUDED.variant_id,
                  variant_label = EXCLUDED.variant_label, active = true, model = EXCLUDED.model, cpu_model = EXCLUDED.cpu_model,
                  cpu_key = EXCLUDED.cpu_key, cpu_model_state = EXCLUDED.cpu_model_state, cpu_count = EXCLUDED.cpu_count,
@@ -144,7 +145,30 @@ def recompute(conn: psycopg.Connection, row: dict[str, Any], catalog: dict[str, 
                  storage_conf = EXCLUDED.storage_conf, hardware_state = EXCLUDED.hardware_state, damage = EXCLUDED.damage,
                  price_kind = EXCLUDED.price_kind, item_price = EXCLUDED.item_price, shipping_price = EXCLUDED.shipping_price,
                  currency = EXCLUDED.currency, shipping_context = EXCLUDED.shipping_context, evidence = EXCLUDED.evidence,
-                 warnings = EXCLUDED.warnings, exclusions = EXCLUDED.exclusions, observed_at = now()
+                 warnings = EXCLUDED.warnings, exclusions = EXCLUDED.exclusions,
+                 essential_states = EXCLUDED.essential_states,
+                 revision = configurations.revision + CASE WHEN
+                   (configurations.active, configurations.variant_id, configurations.variant_label,
+                    configurations.model, configurations.cpu_model, configurations.cpu_key, configurations.cpu_model_state,
+                    configurations.cpu_count, configurations.cpu_count_state, configurations.total_cores,
+                    configurations.ram_gb, configurations.ram_state, configurations.drive_bays, configurations.bays_state,
+                    configurations.drive_size, configurations.size_state, configurations.storage_state,
+                    configurations.storage_conf, configurations.hardware_state, configurations.damage,
+                    configurations.price_kind, configurations.item_price, configurations.shipping_price,
+                    configurations.shipping_context, configurations.evidence, configurations.warnings,
+                    configurations.exclusions, configurations.essential_states)
+                   IS DISTINCT FROM
+                   (EXCLUDED.active, EXCLUDED.variant_id, EXCLUDED.variant_label,
+                    EXCLUDED.model, EXCLUDED.cpu_model, EXCLUDED.cpu_key, EXCLUDED.cpu_model_state,
+                    EXCLUDED.cpu_count, EXCLUDED.cpu_count_state, EXCLUDED.total_cores,
+                    EXCLUDED.ram_gb, EXCLUDED.ram_state, EXCLUDED.drive_bays, EXCLUDED.bays_state,
+                    EXCLUDED.drive_size, EXCLUDED.size_state, EXCLUDED.storage_state,
+                    EXCLUDED.storage_conf, EXCLUDED.hardware_state, EXCLUDED.damage,
+                    EXCLUDED.price_kind, EXCLUDED.item_price, EXCLUDED.shipping_price,
+                    EXCLUDED.shipping_context, EXCLUDED.evidence, EXCLUDED.warnings,
+                    EXCLUDED.exclusions, EXCLUDED.essential_states)
+                   THEN 1 ELSE 0 END, observed_at = now()
+               WHERE configurations.origin = 'source'
                RETURNING id""",
             params,
         ).fetchone()["id"]
@@ -157,7 +181,8 @@ def recompute(conn: psycopg.Connection, row: dict[str, Any], catalog: dict[str, 
                 (cid, c["price_kind"], c["item_price"], c["shipping_price"], source),
             )
     conn.execute(
-        "UPDATE configurations SET active = false WHERE listing_id = %s AND NOT (variant_key = ANY(%s))",
+        "UPDATE configurations SET active = false, revision = revision + 1 "
+        "WHERE listing_id = %s AND origin = 'source' AND active AND NOT (variant_key = ANY(%s))",
         (row["id"], keys),
     )
     conn.execute(
@@ -442,11 +467,14 @@ def select_candidates(conn: psycopg.Connection, budget: int) -> list[dict[str, A
 
 
 def run_enrichment(conn: psycopg.Connection, settings: Settings, fetcher: HttpFetcher, max_details: int,
-                   browser_enabled: bool) -> str:
+                   browser_enabled: bool, *, target_listing_id: int | None = None) -> str:
     if max_details <= 0:
         return "skipped"
     run_id = start_run(conn, "enrichment")
-    candidates = select_candidates(conn, max_details)
+    if target_listing_id is None:
+        candidates = select_candidates(conn, max_details)
+    else:
+        candidates = conn.execute(_CANDIDATE_COLUMNS + " AND l.id = %s LIMIT 1", (target_listing_id,)).fetchall()
     conn.commit()
     catalog = db.catalog(conn)
     cooldown = timedelta(hours=settings.recheck_cooldown_hours)
@@ -616,8 +644,8 @@ def try_collector_lock(lock_conn: psycopg.Connection) -> bool:
 
 
 def run_collection(settings: Settings, max_details: int | None = None, browser: bool | None = None,
-                   fetcher: HttpFetcher | None = None) -> CollectionResult:
-    """Run discovery plus bounded enrichment. The caller MUST already hold the collector lock.
+                   fetcher: HttpFetcher | None = None, *, target_listing_id: int | None = None) -> CollectionResult:
+    """Run full collection, or only one selected listing, while caller holds the collector lock.
 
     Opens and closes its own work connection. A fetcher created here is closed
     here; a caller-supplied fetcher stays the caller's.
@@ -630,11 +658,17 @@ def run_collection(settings: Settings, max_details: int | None = None, browser: 
             fetcher = HttpFetcher(settings.request_timeout, settings.request_delay)
         if not db.schema_ready(conn):
             raise SchemaNotMigrated("database schema not migrated")
-        discovery = run_discovery(conn, settings, fetcher)
+        budget = settings.max_details if max_details is None else max_details
+        if target_listing_id is None:
+            discovery = run_discovery(conn, settings, fetcher)
+        else:
+            discovery = "skipped"
+            budget = min(settings.max_details, budget, 1)
+        enrichment_options = {} if target_listing_id is None else {"target_listing_id": target_listing_id}
         enrichment = run_enrichment(
-            conn, settings, fetcher,
-            settings.max_details if max_details is None else max_details,
+            conn, settings, fetcher, budget,
             settings.browser_enabled if browser is None else (browser and settings.browser_enabled),
+            **enrichment_options,
         )
         prune_history(conn)
         return CollectionResult(discovery, enrichment)

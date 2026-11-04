@@ -14,6 +14,11 @@ Invariants:
   the collector lock, and holds that same session lock until the terminal state
   is committed. Therefore ``running`` with the collector lock free means the
   worker died: the request is marked ``failed`` and never re-run automatically.
+- A request is either global (``target_listing_id IS NULL``: full discovery plus bounded
+  enrichment) or selected (one stable marketplace listing id: no discovery, at most one
+  normal enrichment of that listing). Both share the single queue slot, the global cooldown and
+  the collector lock. The target is stored as ``listings.id`` so it survives deactivation of the
+  selected configuration while the request waits; the worker captures it under the claim.
 - Lock order is collector lock → control row. The API never acquires the
   collector lock; it only inspects ``pg_locks`` (non-blocking, non-interfering).
 """
@@ -47,10 +52,25 @@ ACTIVE = ("queued", "running")
 QUEUE_TIMEOUT = "10s"
 INTERRUPTED_MESSAGE = "Refresh interrupted before completion (worker stopped); not retried automatically"
 
-_COLUMNS = "state, request_id, requested_at, started_at, finished_at, message, now() AS db_now"
+# ``target_item_id`` is a bounded primary-key lookup; no URL is ever exposed.
+_COLUMNS = """state, request_id, requested_at, started_at, finished_at, message, target_listing_id,
+    (SELECT l.item_id FROM listings l WHERE l.id = refresh_control.target_listing_id) AS target_item_id,
+    now() AS db_now"""
 _SELECT = f"SELECT {_COLUMNS} FROM refresh_control WHERE id = 1"
 _MARK_INTERRUPTED = f"""UPDATE refresh_control SET state = 'failed', finished_at = now(), message = %s, updated_at = now()
     WHERE id = 1 AND state = 'running' RETURNING {_COLUMNS}"""
+
+
+class ListingRefreshNotFound(Exception):
+    """The configuration does not exist or its listing is inactive, archived or ended."""
+
+
+class ListingRefreshCooldown(Exception):
+    """The selected listing was checked recently; ``next_check_after`` has not passed."""
+
+    def __init__(self, retry_after_seconds: int) -> None:
+        super().__init__(f"listing refresh available in {retry_after_seconds}s")
+        self.retry_after_seconds = retry_after_seconds
 
 
 class RefreshDeadline(BaseException):
@@ -99,7 +119,7 @@ def collector_running(conn: psycopg.Connection) -> bool:
 
 def _status(row: dict[str, Any] | None, now: datetime, running: bool, settings: Settings) -> dict[str, Any]:
     row = row or {"state": "idle", "request_id": None, "requested_at": None, "started_at": None,
-                  "finished_at": None, "message": None}
+                  "finished_at": None, "message": None, "target_listing_id": None, "target_item_id": None}
     retry_at: datetime | None = None
     retry_after = 0
     if row["requested_at"] is not None:
@@ -119,6 +139,8 @@ def _status(row: dict[str, Any] | None, now: datetime, running: bool, settings: 
         "collector_running": running,
         "can_refresh": enabled and row["state"] not in ACTIVE and not running and retry_after == 0,
         "message": row["message"],
+        "scope": "all" if row["target_listing_id"] is None else "listing",
+        "target_item_id": row["target_item_id"] if row["target_listing_id"] is not None else None,
     }
 
 
@@ -129,14 +151,29 @@ def status(conn: psycopg.Connection, settings: Settings) -> dict[str, Any]:
     return _status(row, now, collector_running(conn), settings)
 
 
-def enqueue(conn: psycopg.Connection, settings: Settings) -> tuple[str, dict[str, Any]]:
+_RESOLVE_TARGET = """SELECT l.id, l.next_check_after, now() AS db_now
+    FROM configurations c JOIN listings l ON l.id = c.listing_id
+    WHERE c.id = %s AND c.active AND l.archived_at IS NULL AND l.ended_at IS NULL"""
+
+
+def enqueue(conn: psycopg.Connection, settings: Settings, *,
+            configuration_id: int | None = None) -> tuple[str, dict[str, Any]]:
     """Atomically accept one manual refresh request.
+
+    With ``configuration_id`` the request targets that active configuration's live
+    marketplace listing (any origin, including manual configurations) instead of the
+    whole source. Raises ``ListingRefreshNotFound`` for an unknown/inactive/archived/ended
+    target and ``ListingRefreshCooldown`` while the listing's ``next_check_after`` lies in
+    the future; neither consumes the queue slot or the global cooldown. A global request
+    clears any previous target.
 
     Returns ``(outcome, status)`` with outcome ``accepted`` (newly queued),
     ``active`` (a request is queued/running or a collector holds the lock) or
     ``cooldown`` (the last accepted request is too recent). Concurrent callers
     serialize on the control row, so exactly one of them is accepted.
     """
+    rejection: Exception | None = None
+    result: tuple[str, dict[str, Any]] | None = None
     with conn.transaction():
         _bound(conn)
         conn.execute("INSERT INTO refresh_control (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
@@ -148,18 +185,36 @@ def enqueue(conn: psycopg.Connection, settings: Settings) -> tuple[str, dict[str
             row = conn.execute(_MARK_INTERRUPTED, (INTERRUPTED_MESSAGE,)).fetchone()
             log.warning("manual refresh %s was interrupted; marked failed", row["request_id"])
         current = _status(row, row["db_now"], running, settings)
-        if row["state"] in ACTIVE or running:
-            return "active", current
-        if current["retry_after_seconds"] > 0:
-            return "cooldown", current
-        row = conn.execute(
-            f"""UPDATE refresh_control SET state = 'queued', request_id = %s, requested_at = now(), started_at = NULL,
-                  finished_at = NULL, message = NULL, updated_at = now()
-                WHERE id = 1 RETURNING {_COLUMNS}""",
-            (uuid.uuid4(),),
-        ).fetchone()
-        log.info("manual refresh %s queued", row["request_id"])
-        return "accepted", _status(row, row["db_now"], running, settings)
+        target_id: int | None = None
+        if configuration_id is not None:
+            target = conn.execute(_RESOLVE_TARGET, (configuration_id,)).fetchone()
+            if target is None:
+                rejection = ListingRefreshNotFound("no live listing for this configuration")
+            elif target["next_check_after"] is not None and target["next_check_after"] > target["db_now"]:
+                wait = math.ceil((target["next_check_after"] - target["db_now"]).total_seconds())
+                rejection = ListingRefreshCooldown(wait)
+            else:
+                target_id = target["id"]
+        if rejection is None:
+            if row["state"] in ACTIVE or running:
+                result = "active", current
+            elif current["retry_after_seconds"] > 0:
+                result = "cooldown", current
+            else:
+                row = conn.execute(
+                    f"""UPDATE refresh_control SET state = 'queued', request_id = %s, requested_at = now(),
+                          started_at = NULL, finished_at = NULL, message = NULL, target_listing_id = %s,
+                          updated_at = now()
+                        WHERE id = 1 RETURNING {_COLUMNS}""",
+                    (uuid.uuid4(), target_id),
+                ).fetchone()
+                log.info("manual refresh %s queued (%s)", row["request_id"], "listing" if target_id else "all")
+                result = "accepted", _status(row, row["db_now"], running, settings)
+    # Raised after commit so an interrupted-request repair above is never rolled back by a rejection.
+    if rejection is not None:
+        raise rejection
+    assert result is not None
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -191,8 +246,21 @@ def _deadline(seconds: float | None) -> Iterator[None]:
 
 
 def final_state(result: collector.CollectionResult) -> tuple[str, str]:
-    """Map the run's recorded discovery/enrichment outcomes to a terminal request state."""
+    """Map the run's recorded discovery/enrichment outcomes to a terminal request state.
+
+    A selected-listing run skips discovery; its state is the single enrichment's outcome and the
+    message never claims a discovery success.
+    """
     discovery, enrichment = result.discovery, result.enrichment
+    if discovery == "skipped":
+        state = {"success": "succeeded", "skipped": "succeeded", "blocked": "blocked", "failed": "failed"}.get(
+            enrichment, "partial")
+        message = f"Selected listing refresh; enrichment {enrichment}"
+        if enrichment == "skipped":
+            message += " (no detail-check budget configured)"
+        if state != "succeeded":
+            message += "; see source status for details"
+        return state, message
     if discovery == "failed":
         state = "failed"
     elif discovery == "blocked":
@@ -207,11 +275,18 @@ def final_state(result: collector.CollectionResult) -> tuple[str, str]:
     return state, message
 
 
-def _execute(settings: Settings, fetcher: HttpFetcher | None, deadline_seconds: float | None) -> tuple[str, str]:
-    """Run one collection (caller holds the collector lock); never raises for collection failures."""
+def _execute(settings: Settings, fetcher: HttpFetcher | None, deadline_seconds: float | None,
+             target_listing_id: int | None = None) -> tuple[str, str]:
+    """Run one collection (caller holds the collector lock); never raises for collection failures.
+
+    A target runs no discovery and enriches at most that one listing within the configured detail-check budget.
+    """
     try:
         with _deadline(deadline_seconds):
-            result = collector.run_collection(settings, fetcher=fetcher)
+            if target_listing_id is None:
+                result = collector.run_collection(settings, fetcher=fetcher)
+            else:
+                result = collector.run_collection(settings, fetcher=fetcher, target_listing_id=target_listing_id)
     except RefreshDeadline:
         log.error("manual refresh exceeded its %ss deadline; aborted", deadline_seconds)
         return "failed", f"Refresh aborted after exceeding its {deadline_seconds:g}s deadline"
@@ -267,6 +342,7 @@ def process_pending(lock_conn: psycopg.Connection, settings: Settings, *, fetche
                 log.warning("manual refresh %s was interrupted; marked failed", row["request_id"])
                 return "failed"
             request_id = row["request_id"]
+            target_listing_id = row["target_listing_id"]  # captured under the claim; never re-read
             lock_conn.execute(
                 """UPDATE refresh_control SET state = 'running', started_at = now(), finished_at = NULL, message = NULL,
                      updated_at = now() WHERE id = 1"""
@@ -282,7 +358,7 @@ def process_pending(lock_conn: psycopg.Connection, settings: Settings, *, fetche
                     (request_id,),
                 )
             return None
-        state, message = _execute(settings, fetcher, deadline_seconds)
+        state, message = _execute(settings, fetcher, deadline_seconds, target_listing_id)
         with lock_conn.transaction():
             lock_conn.execute(
                 """UPDATE refresh_control SET state = %s, message = %s, finished_at = now(), updated_at = now()

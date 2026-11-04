@@ -44,16 +44,39 @@ PAGE_CURRENT_SQL = (
     f"(l.page_claims->>'checked_at')::timestamptz + interval '{LEGACY_PAGE_FRESH_HOURS} hours') > now(), false)"
 )
 
+# Manual configurations: a price is paired with the configuration only through an explicit user assertion
+# (never browser verification). Browser/page verification applies to source rows only.
+MANUAL_PRICE_PAIRED_SQL = (
+    "(c.origin = 'manual' AND c.price_kind = 'exact' AND (c.manual_data->>'price_confirmed') = 'true')"
+)
+PRICE_PAIRED_SQL = (
+    f"({MANUAL_PRICE_PAIRED_SQL} OR (c.origin = 'source' AND c.price_kind = 'exact' AND {PAGE_CURRENT_SQL}))"
+)
+# A source configuration with an active manual child is replaced by its children in inventory,
+# whether or not those children pass the filters (applied before filtering, counting and paging).
+HIDE_OVERRIDDEN_SQL = (
+    "NOT EXISTS (SELECT 1 FROM configurations mc"
+    " WHERE mc.source_configuration_id = c.id AND mc.origin = 'manual' AND mc.active)"
+)
+
 SELECT_COLUMNS = f"""
 c.id, c.variant_id, c.variant_label, c.model, c.cpu_model, c.cpu_count, c.cpu_count_state, c.total_cores,
 c.ram_gb, c.ram_state, c.drive_bays, c.bays_state, c.drive_size, c.size_state, c.storage_state, c.storage_conf,
 c.hardware_state, c.damage, c.price_kind, c.item_price, c.shipping_price, c.quoted_total, c.currency,
 c.shipping_context, c.evidence, c.warnings, c.exclusions,
+c.origin, c.revision, c.essential_states, c.manual_data, c.manual_created_at, c.manual_updated_at,
+c.source_configuration_id, src.revision AS source_revision, src.active AS source_active,
+(c.origin = 'manual' AND (src.active IS NOT TRUE
+  OR src.revision IS DISTINCT FROM (c.manual_data->'baseline'->>'source_revision')::integer)) AS source_changed,
 l.item_id, l.title, l.seller, l.condition, l.canonical_url, l.last_seen_source_at, l.last_seen_at,
-l.last_checked_at, l.detail_status, l.page_status, l.page_checked_at, l.vendor,
-CASE WHEN l.page_claims->>'status' = 'verified' THEN (l.page_claims->>'checked_at')::timestamptz END AS page_verified_at,
-coalesce({PAGE_APPLIES_SQL}, false) AS page_applies, {PAGE_CURRENT_SQL} AS page_current,
-coalesce((l.page_claims->>'status' = 'verified') AND (l.page_claims->>'has_variations') = 'true', false) AS page_has_variations,
+l.last_checked_at, l.next_check_after, l.detail_status, l.page_status, l.vendor,
+CASE WHEN c.origin = 'source' THEN l.page_checked_at END AS page_checked_at,
+CASE WHEN c.origin = 'source' AND l.page_claims->>'status' = 'verified'
+     THEN (l.page_claims->>'checked_at')::timestamptz END AS page_verified_at,
+(c.origin = 'source' AND coalesce({PAGE_APPLIES_SQL}, false)) AS page_applies,
+(c.origin = 'source' AND {PAGE_CURRENT_SQL}) AS page_current,
+coalesce(c.origin = 'source' AND (l.page_claims->>'status' = 'verified')
+         AND (l.page_claims->>'has_variations') = 'true', false) AS page_has_variations,
 CASE WHEN l.description_claims->>'status' = 'verified' THEN l.description_claims->>'text_excerpt' END AS description_text,
 m.generation, m.generation_label, m.target_era, m.rack_units, m.socket_capacity,
 b.cpu_mark, b.single_thread, b.samples, b.version AS bench_version, b.scope AS bench_scope,
@@ -63,6 +86,7 @@ b.source_url AS bench_url, b.retrieved_at AS bench_retrieved_at
 FROM_SQL = """
 FROM configurations c
 JOIN listings l ON l.id = c.listing_id
+LEFT JOIN configurations src ON src.id = c.source_configuration_id
 LEFT JOIN server_models m ON m.model = c.model
 LEFT JOIN cpu_benchmarks b ON b.cpu_key = c.cpu_key
 WHERE c.active AND l.archived_at IS NULL AND l.ended_at IS NULL AND c.currency = 'USD'
@@ -105,7 +129,7 @@ def build_predicates(f: Filters) -> tuple[list[str], list[str], list[str], dict[
     if f.generation is not None and f.vendor is None:
         raise ValueError("generation numbers are vendor-specific; a vendor is required")
     hard: list[str] = []
-    sat: list[str] = ["c.price_kind = 'exact'", PAGE_CURRENT_SQL, "c.hardware_state <> 'missing'"]
+    sat: list[str] = [PRICE_PAIRED_SQL, "c.hardware_state <> 'missing'"]
     bad: list[str] = ["(c.hardware_state = 'missing')"]
     p: dict[str, Any] = {}
     if f.vendor:
@@ -161,13 +185,16 @@ def build_predicates(f: Filters) -> tuple[list[str], list[str], list[str], dict[
     return hard, sat, bad, p
 
 
-def classified_sql(f: Filters) -> tuple[str, dict[str, Any]]:
+def classified_sql(f: Filters, *, hide_overridden: bool = True) -> tuple[str, dict[str, Any]]:
     """SQL yielding filtered rows with boolean ``is_match`` (never NULL).
 
     Chassis scope (model/generation/height) and text search are hard filters:
-    unknown catalog metadata never admits a row, not even as a lead.
+    unknown catalog metadata never admits a row, not even as a lead. Inventory
+    hides source rows replaced by manual children; detail reads do not.
     """
     hard, sat, bad, params = build_predicates(f)
+    if hide_overridden:
+        hard.insert(0, HIDE_OVERRIDDEN_SQL)
     is_match = f"({' AND '.join(sat)}) AND NOT ({' OR '.join(bad)})"
     lead_ok = "false" if (f.confirmed_only or not f.include_leads) else f"NOT ({' OR '.join(bad)})"
     sql = (
@@ -206,12 +233,13 @@ def get_listing(conn: psycopg.Connection, listing_id: int) -> dict[str, Any] | N
     """Detail of one active configuration; match_state evaluated against default filters.
 
     Rows that are neither matches nor leads (for example explicitly missing
-    essential hardware) stay reachable so their evidence can be inspected.
+    essential hardware) stay reachable so their evidence can be inspected, as
+    do source rows replaced in inventory by manual children.
     """
     row = conn.execute(f"SELECT {SELECT_COLUMNS} {FROM_SQL} AND c.id = %(id)s", {"id": listing_id}).fetchone()
     if row is None:
         return None
-    default_inner, default_params = classified_sql(Filters())
+    default_inner, default_params = classified_sql(Filters(), hide_overridden=False)
     default = conn.execute(
         f"SELECT is_match FROM ({default_inner}) AS r WHERE id = %(id)s", {**default_params, "id": listing_id}
     ).fetchone()
@@ -237,6 +265,12 @@ def _warnings(r: dict[str, Any]) -> list[str]:
             reason = "no successful recheck within the verification window"
         warnings.insert(0, f"eBay page last verified {when}; {reason}; "
                            "current price, configuration and availability not reverified")
+    if r["origin"] == "manual" and r["source_changed"]:
+        if not r["source_active"]:
+            warnings.insert(0, "Original source configuration is no longer listed; manual values kept unchanged")
+        else:
+            warnings.insert(0, "Source listing data changed after this manual configuration was saved; "
+                               "manual values kept unchanged")
     return warnings
 
 
@@ -270,9 +304,15 @@ def _choice_evidence(source: str, text: str | None) -> list[str]:
     return []
 
 
+_MANUAL_PRICE_EVIDENCE = "Price manually entered for this configuration; not independently verified"
+
+
 def _offer(r: dict[str, Any]) -> dict[str, Any]:
     """Classify how far the shown price and specification are known to belong together."""
     price_kind = r["price_kind"]
+    if r["origin"] == "manual" and price_kind == "exact" and (r["manual_data"] or {}).get("price_confirmed") is True:
+        return {"kind": "manual_configuration", "price_is_starting": False, "specification_price_paired": True,
+                "evidence": [_MANUAL_PRICE_EVIDENCE]}
     if price_kind == "exact":
         current = bool(r["page_current"])
         return {"kind": "configuration" if current else "historical_configuration",
@@ -286,6 +326,21 @@ def _offer(r: dict[str, Any]) -> dict[str, Any]:
             "price_is_starting": price_kind in ("base", "range") and r["item_price"] is not None,
             "specification_price_paired": False, "evidence": evidence}
 
+
+def _manual(r: dict[str, Any]) -> dict[str, Any] | None:
+    if r["origin"] != "manual":
+        return None
+    data = r["manual_data"] or {}
+    return {
+        "source_configuration_id": r["source_configuration_id"],
+        "revision": r["revision"],
+        "created_at": _iso(r["manual_created_at"]),
+        "updated_at": _iso(r["manual_updated_at"]),
+        "fields": sorted(data.get("fields") or {}),
+        "notes": data.get("notes") or "",
+        "price_confirmed": data.get("price_confirmed") is True,
+        "source_changed": bool(r["source_changed"]),
+    }
 
 
 def serialize(r: dict[str, Any], match_state: str) -> dict[str, Any]:
@@ -338,6 +393,7 @@ def serialize(r: dict[str, Any], match_state: str) -> dict[str, Any]:
         "source_updated_at": _iso(r["last_seen_source_at"]),
         "last_seen_at": _iso(r["last_seen_at"]),
         "last_checked_at": _iso(r["last_checked_at"]),
+        "next_check_after": _iso(r["next_check_after"]),
         "detail_status": r["detail_status"],
         "page_verified_at": _iso(r["page_verified_at"]),
         "page_checked_at": _iso(r["page_checked_at"]),
@@ -347,6 +403,10 @@ def serialize(r: dict[str, Any], match_state: str) -> dict[str, Any]:
         "exclusions": r["exclusions"] or [],
         "benchmark": benchmark,
         "offer": _offer(r),
+        "origin": r["origin"],
+        "revision": r["revision"],
+        "essential_states": r["essential_states"],
+        "manual": _manual(r),
     }
 
 
@@ -412,8 +472,9 @@ def status(conn: psycopg.Connection) -> dict[str, Any]:
     counts = {
         r["vendor"]: r["n"]
         for r in conn.execute(
-            """SELECT l.vendor, count(*) AS n FROM configurations c JOIN listings l ON l.id = c.listing_id
-               WHERE c.active AND l.archived_at IS NULL AND l.ended_at IS NULL GROUP BY l.vendor"""
+            f"""SELECT l.vendor, count(*) AS n FROM configurations c JOIN listings l ON l.id = c.listing_id
+               WHERE c.active AND l.archived_at IS NULL AND l.ended_at IS NULL AND {HIDE_OVERRIDDEN_SQL}
+               GROUP BY l.vendor"""
         ).fetchall()
     }
     sources = []

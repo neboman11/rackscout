@@ -854,7 +854,9 @@ def build_configurations(
 
     base_price = Decimal(record["item_price"]) if record.get("item_price") is not None else None
     base_ship = Decimal(record["shipping_price"]) if record.get("shipping_price") is not None else None
-    warnings: list[str] = []
+    # Warnings are tagged with the fact they describe ("price", "ram_gb", "psu", ...) so a manual
+    # override can replace exactly the warnings of the facts it asserts (``warning_fields``).
+    warnings: list[tuple[str, str]] = []
     price_kind = "base"
     shipping_context = (
         "Index shipping quote; destination not confirmed; tax excluded"
@@ -867,7 +869,7 @@ def build_configurations(
             variants = page_ok.get("variations") or []
             price_kind = "range" if page_ok.get("price_kind") == "range" else "base"
             if not variants:
-                warnings.append("Listing has variations that could not be read; price is the displayed base/range price, configuration unverified")
+                warnings.append(("price", "Listing has variations that could not be read; price is the displayed base/range price, configuration unverified"))
         else:
             price_kind = "exact" if page_ok.get("price") is not None else "base"
             if page_ok.get("price") is not None:
@@ -884,9 +886,9 @@ def build_configurations(
                 "index shipping quote not used; total unknown"
             )
     else:
-        warnings.append("Index starting price; listing variations and selected configuration not verified")
+        warnings.append(("price", "Index starting price; listing variations and selected configuration not verified"))
     if base_ship is None:
-        warnings.append("Shipping unknown; quoted total unavailable (not treated as free)")
+        warnings.append(("shipping", "Shipping unknown; quoted total unavailable (not treated as free)"))
 
     def not_applied(field_name: str, reason: str, what: str) -> Resolved:
         return Resolved(None, "unknown", [_ev(field_name, "unknown", f"{reason}; {what} not applied to this variation", item_url)])
@@ -1047,29 +1049,29 @@ def build_configurations(
 
     def essentials_resolution(
         cpu_model: Resolved, ram: Resolved, bay_res: Resolved, facts: VariantFacts
-    ) -> tuple[dict[str, str], list[dict[str, Any]], list[str], list[str]]:
+    ) -> tuple[dict[str, str], list[dict[str, Any]], list[tuple[str, str]], list[tuple[str, str]]]:
         states: dict[str, str] = {}
         evidence: list[dict[str, Any]] = []
-        missing: list[str] = []
-        notes: list[str] = []
+        missing: list[tuple[str, str]] = []
+        notes: list[tuple[str, str]] = []
         cpu_stated_missing = facts.cpu_missing or (
             facts.cpu is None and bool((desc and desc.get("cpu_missing")) or title_claims["cpu_missing"])
         )
         if cpu_stated_missing:
             states["cpu"] = "missing"
-            missing.append("CPU stated as not included")
+            missing.append(("cpu_included", "CPU stated as not included"))
         else:
             states["cpu"] = "confirmed" if cpu_model.state == "confirmed" else ("present" if cpu_model.value else "unknown")
         if ram.value == 0 and ram.state in CERTAIN:
             states["ram"] = "missing"
-            missing.append("No RAM installed")
+            missing.append(("ram_gb", "No RAM installed"))
         else:
             states["ram"] = "confirmed" if ram.state == "confirmed" and ram.value else "unknown"
         for key, label in (("psu", "Power supplies"), ("cooling", "Cooling (fans/heatsinks)"), ("nic", "Network adapter")):
             state, text, url = claim_source(key)
             if state == "missing":
                 states[key] = "missing"
-                missing.append(f"{label} not included")
+                missing.append((key, f"{label} not included"))
                 evidence.append(_ev(key, "confirmed", f"Missing: {text}", url))
             elif state == "confirmed":
                 states[key] = "confirmed"
@@ -1088,11 +1090,11 @@ def build_configurations(
         controller, ctl_text, ctl_url = claim_source("controller")
         if backplane == "missing":
             states["drive_path"] = "missing"
-            missing.append("Drive backplane not included")
+            missing.append(("drive_path", "Drive backplane not included"))
             evidence.append(_ev("drive_path", "confirmed", f"Missing backplane: {bp_text}", bp_url))
         elif controller == "missing":
             states["drive_path"] = "review"
-            notes.append("Storage/RAID controller stated as not included; drive connectivity relies on onboard controller support (not verified)")
+            notes.append(("drive_path", "Storage/RAID controller stated as not included; drive connectivity relies on onboard controller support (not verified)"))
             evidence.append(_ev("drive_path", "unknown", f"Controller not included: {ctl_text}", ctl_url))
         elif backplane == "confirmed":
             states["drive_path"] = "confirmed"
@@ -1107,7 +1109,7 @@ def build_configurations(
             states["drive_path"] = "unknown"
             evidence.append(_ev("drive_path", "unknown", "Drive backplane/controller not stated", None))
         if facts.component_unresolved:
-            notes.append(facts.component_unresolved)
+            notes.append(("variant", facts.component_unresolved))
         return states, evidence, missing, notes
 
     exclusions = sorted(set((desc or {}).get("exclusions") or []) | set(title_claims["exclusions"]))
@@ -1157,40 +1159,44 @@ def build_configurations(
             if record["total_cores"] % cpu_count.value == 0:
                 total_cores = record["total_cores"]
 
-        row_warnings = list(warnings) + facts.warnings
+        tagged: list[tuple[str, str]] = list(warnings) + [("variant", w) for w in facts.warnings]
         if variant is not None:
-            row_warnings = [w for w in row_warnings if not w.startswith("Index starting price")]
+            tagged = [(f, w) for f, w in tagged if not w.startswith("Index starting price")]
         if ram.state == "conflicting":
-            row_warnings.append("RAM claims conflict; the lowest stated amount is used and cannot satisfy a confirmed match")
+            tagged.append(("ram_gb", "RAM claims conflict; the lowest stated amount is used and cannot satisfy a confirmed match"))
         if ram.value == 0:
-            row_warnings.append("No RAM installed in this configuration")
+            tagged.append(("ram_gb", "No RAM installed in this configuration"))
         if cpu_count.state == "unknown":
-            row_warnings.append("Installed CPU count unknown")
+            tagged.append(("cpu_count", "Installed CPU count unknown"))
         elif cpu_count.state == "conflicting":
-            row_warnings.append("CPU count claims conflict")
+            tagged.append(("cpu_count", "CPU count claims conflict"))
         if storage.state == "unknown":
-            row_warnings.append("Included storage not stated")
+            tagged.append(("storage_state", "Included storage not stated"))
         elif storage.state == "conflicting":
-            row_warnings.append("Storage claims conflict; not treated as diskless")
+            tagged.append(("storage_state", "Storage claims conflict; not treated as diskless"))
         for key in ("psu", "cooling", "nic"):
             if states[key] == "unknown":
-                row_warnings.append(f"{dict(psu='PSU', cooling='Cooling', nic='NIC')[key]} not confirmed")
+                tagged.append((key, f"{dict(psu='PSU', cooling='Cooling', nic='NIC')[key]} not confirmed"))
         if states["drive_path"] == "unknown":
-            row_warnings.append("Drive backplane not confirmed")
-        row_warnings.extend(notes)
+            tagged.append(("drive_path", "Drive backplane not confirmed"))
+        tagged.extend(notes)
         if cosmetic:
-            row_warnings.append(f"Cosmetic note: {clean_text(cosmetic, 120)}")
+            tagged.append(("other", f"Cosmetic note: {clean_text(cosmetic, 120)}"))
         if damage_text:
-            row_warnings.append(f"Damage disclosed: {clean_text(damage_text, 160)}")
+            tagged.append(("damage", f"Damage disclosed: {clean_text(damage_text, 160)}"))
         if (desc or {}).get("tested_text"):
-            row_warnings.append("Seller testing claim is not an independent component verification")
-        row_warnings.extend(missing)
+            tagged.append(("other", "Seller testing claim is not an independent component verification"))
+        tagged.extend(missing)
         if bay_res.state == "unknown":
-            row_warnings.append("Drive bay count not stated")
+            tagged.append(("drive_bays", "Drive bay count not stated"))
         elif bay_res.state == "conflicting":
-            row_warnings.append("Drive bay claims conflict")
+            tagged.append(("drive_bays", "Drive bay claims conflict"))
         if size_res.state == "conflicting":
-            row_warnings.append("SFF/LFF claims conflict")
+            tagged.append(("drive_size", "SFF/LFF claims conflict"))
+        warning_fields: dict[str, list[str]] = {}
+        for name, text in tagged:
+            if text not in warning_fields.setdefault(name, []):
+                warning_fields[name].append(text)
 
         evidence = (
             cpu_model.evidence + cpu_count.evidence + ram.evidence + bay_res.evidence + size_res.evidence
@@ -1233,8 +1239,12 @@ def build_configurations(
             "currency": "USD",
             "shipping_context": shipping_context,
             "evidence": evidence,
-            "warnings": list(dict.fromkeys(row_warnings)),
+            "warnings": list(dict.fromkeys(w for _, w in tagged)),
             "exclusions": exclusions,
+            # Structured per-essential states (cpu, ram, psu, cooling, nic, drive_path), persisted by the
+            # collector, and the fact each warning describes (not persisted; used by manual overrides).
+            "essential_states": dict(states),
+            "warning_fields": warning_fields,
         }
 
     if variants:

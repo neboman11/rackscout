@@ -60,6 +60,11 @@ let opener = null;
 let openerId = null;
 const rowStates = new Map();
 let lastPages = 1;
+let view = null;
+let editor = null;
+let editorLoading = 0;
+let dialogGen = 0;
+let fetchTimer = 0;
 
 const $ = id => document.getElementById(id);
 
@@ -394,6 +399,7 @@ async function fetchJson(url, signal) {
   return response.json();
 }
 
+// Resolves true when rendered, false on error, null when superseded by a newer load.
 async function loadListings() {
   const seq = ++listSeq;
   if (listController) listController.abort();
@@ -403,11 +409,13 @@ async function loadListings() {
   showError('');
   try {
     const data = await fetchJson('/api/listings?' + buildParams(true).toString(), controller.signal);
-    if (seq !== listSeq) return;
+    if (seq !== listSeq) return null;
     renderListings(data);
+    return true;
   } catch (error) {
-    if (seq !== listSeq || error.name === 'AbortError') return;
+    if (seq !== listSeq || error.name === 'AbortError') return null;
     showError('Could not load listings. ' + (error.message || 'Network error.') + ' Previously shown results may be out of date.');
+    return false;
   } finally {
     if (seq === listSeq) setLoading(false);
   }
@@ -486,7 +494,7 @@ function buildRow(item) {
     attrs: {
       type: 'button',
       'data-id': String(item.id),
-      'aria-label': 'View ' + modelTitle(item) + ', RAM ' + ramDisplay(item) + ', ' + storageLabel(item) + ', ' + priceAria(item),
+      'aria-label': 'View ' + (item.origin === 'manual' ? 'manual configuration ' : '') + modelTitle(item) + ', RAM ' + ramDisplay(item) + ', ' + storageLabel(item) + ', ' + priceAria(item),
     },
   });
   const seller = [item.seller || 'Unknown seller', item.rack_units == null ? 'height unknown' : item.rack_units + 'U', item.condition || 'condition unknown'].join(' · ');
@@ -514,7 +522,7 @@ function buildRow(item) {
   ]);
 
   const row = el('tr', null, [
-    el('td', null, [nameButton, item.variant_label ? el('small', { className: 'variant-label', text: (offerOf(item).kind === 'historical_configuration' ? 'Historical option: ' : 'Option: ') + item.variant_label }) : null, small(seller)]),
+    el('td', null, [nameButton, manualBadge(item), variantLine(item), small(seller), manualUpdatedNote(item)]),
     cpuCell,
     socketCell,
     benchmarkCell(item),
@@ -529,7 +537,7 @@ function buildRow(item) {
 function ramLabel(item) {
   if (item.ram_state === 'conflicting') return 'Conflicting claims';
   if (item.ram_gb != null && item.ram_gb > 0) return item.ram_gb + ' GB';
-  if (item.ram_gb === 0 && (item.ram_state === 'confirmed' || item.ram_state === 'inferred')) return 'Not included';
+  if (item.ram_gb === 0 && (item.ram_state === 'confirmed' || item.ram_state === 'inferred' || manualFields(item).includes('ram_gb'))) return 'Not included';
   return 'Not stated';
 }
 
@@ -555,6 +563,7 @@ function offerHeadline(item) {
     case 'historical_configuration': return 'Historical quote — not current';
     case 'multiple_options': return 'Multiple options available';
     case 'unverified': return 'Configuration options unverified';
+    case 'manual_configuration': return 'Price entered by you — not independently verified';
     default: return '';
   }
 }
@@ -564,6 +573,7 @@ function offerExplanation(item) {
   const price = offer.starting ? 'The price shown is a starting price' : 'The price shown';
   switch (offer.kind) {
     case 'configuration': return 'Price checked against the current listing page for this option. Hardware confidence remains field-specific; an exact price does not confirm every component is included.';
+    case 'manual_configuration': return 'You entered this price for this exact configuration. It has not been checked against the current listing page and is never browser-verified. Hardware values you did not change keep their original source confidence.';
     case 'historical_configuration': return 'This exact option was captured earlier and the page has not been reverified. Treat the price and selected option as historical, not a current quote.';
     case 'multiple_options': return 'The listing shows evidence of more than one hardware option. ' + price + '; which option it applies to is not verified, and this view does not list every option.';
     default: return 'The selected option is not verified. ' + price + ' and may not match the specifications listed below. This does not mean the listing offers multiple options.';
@@ -575,6 +585,7 @@ function priceAria(item) {
   const offer = offerOf(item);
   const total = formatMoney(item.quoted_total);
   const itemPrice = formatMoney(item.item_price);
+  if (offer.kind === 'manual_configuration') return (total || 'total unknown') + ', price entered by you, not independently verified';
   if (offer.kind === 'historical_configuration') return total ? 'historical quote ' + total + ', not current' : 'historical quote, total unknown';
   if (offer.starting) {
     if (total) return 'starting price ' + total + ' or more, configuration not verified';
@@ -583,15 +594,41 @@ function priceAria(item) {
   return total || 'total unknown';
 }
 
+function manualFields(item) {
+  return item && item.manual && Array.isArray(item.manual.fields) ? item.manual.fields : [];
+}
+
+function manualBadge(item) {
+  if (item.origin !== 'manual') return null;
+  return el('div', null, [el('span', { className: 'badge manual', text: 'Manual configuration — entered by you' })]);
+}
+
+function variantLine(item) {
+  if (!item.variant_label) return null;
+  const prefix = item.origin === 'manual' ? 'Manual option: ' : offerOf(item).kind === 'historical_configuration' ? 'Historical option: ' : 'Option: ';
+  return el('small', { className: 'variant-label', text: prefix + item.variant_label });
+}
+
+function manualUpdatedNote(item) {
+  if (item.origin !== 'manual' || !item.manual) return null;
+  const when = formatDate(item.manual.updated_at || item.manual.created_at);
+  const parts = ['Edited ' + (when || 'date unknown'), manualFields(item).length ? plural(manualFields(item).length, 'field', 'fields') + ' changed' : 'no fields changed'];
+  if (item.manual.source_changed) parts.push('source changed since');
+  return small(parts.join(' · '));
+}
+
 function ramDisplay(item) {
   const label = ramLabel(item);
-  if (!offerOf(item).paired && item.ram_gb != null && item.ram_gb > 0 && item.ram_state !== 'conflicting') return 'Listed: ' + label;
+  if (!offerOf(item).paired && item.ram_gb != null && item.ram_gb > 0 && item.ram_state !== 'conflicting') {
+    return (manualFields(item).includes('ram_gb') ? 'Entered: ' : 'Listed: ') + label;
+  }
   return label;
 }
 
 function ramPairingNote(item) {
   const offer = offerOf(item);
   if (offer.paired || ramLabel(item) === 'Not stated') return '';
+  if (manualFields(item).includes('ram_gb')) return 'Entered by you; no confirmed price for it';
   return offer.starting ? 'Not tied to starting price' : 'Listing claim, not price-verified';
 }
 
@@ -850,16 +887,32 @@ function refreshWaitText(seconds) {
   return 'about ' + Math.ceil(secs / 3600) + ' hours';
 }
 
+const SELECTED_LABELS = {
+  succeeded: 'Last selected-listing fetch finished',
+  partial: 'Last selected-listing fetch completed partially (cached, backed-off or incomplete data)',
+  blocked: 'Last selected-listing fetch was blocked by a source',
+  failed: 'Last selected-listing fetch failed',
+};
+
 function refreshMessageText(info) {
   if (!info) return refreshNote || 'Checking refresh availability…';
   const when = formatDate(info.finished_at);
   const server = info.message ? ' ' + info.message : '';
+  const selected = info.scope === 'listing';
+  const target = info.target_item_id ? 'listing ' + info.target_item_id : 'the selected listing';
   if (!info.enabled) return 'Manual refresh is disabled on this server. Data is still collected automatically once a day at 04:00 UTC.' + server;
-  if (info.state === 'queued') return 'Refresh queued. Waiting for the worker to start. This page will update when it finishes.' + server;
-  if (info.state === 'running') return 'Collecting data now. This can take several minutes; filters and listings stay usable.' + server;
+  if (info.state === 'queued') {
+    if (selected) return 'Fetch queued for ' + target + ' only, not the whole inventory. This page will update when it finishes.' + server;
+    return 'Refresh queued. Waiting for the worker to start. This page will update when it finishes.' + server;
+  }
+  if (info.state === 'running') {
+    if (selected) return 'Fetching ' + target + ' only; the rest of the inventory is not being re-collected. It may reuse cached data, honor a source back-off or finish partially. Filters, listings and manual edits stay usable.' + server;
+    return 'Collecting data now. This can take several minutes; filters and listings stay usable.' + server;
+  }
   if (info.collector_running) return 'A collection is already running (scheduled or manual). Refresh is unavailable until it finishes.' + server;
   const parts = [];
-  if (REFRESH_LABELS[info.state]) parts.push(REFRESH_LABELS[info.state] + (when ? ' at ' + when : '') + '.' + server);
+  const labels = selected ? SELECTED_LABELS : REFRESH_LABELS;
+  if (labels[info.state]) parts.push(labels[info.state] + (selected ? ' for ' + target : '') + (when ? ' at ' + when : '') + '.' + server);
   if (refreshCooldown(info)) {
     const retry = formatDate(info.retry_at);
     parts.push('Next manual refresh ' + (retry ? 'available at ' + retry + ' (' : 'available in ') + refreshWaitText(info.retry_after_seconds) + (retry ? ')' : '') + '.');
@@ -883,6 +936,7 @@ function renderRefresh() {
   const next = refreshNote || refreshMessageText(info);
   if (message.textContent !== next) message.textContent = next;
   message.classList.toggle('err', refreshNoteIsError || (!!info && (info.state === 'failed' || info.state === 'blocked') && !refreshActive(info)));
+  renderFetchControl();
 }
 
 function setRefreshNote(text, isError) {
@@ -924,20 +978,26 @@ function validRefreshInfo(data) {
   return !!data && typeof data === 'object' && typeof data.enabled === 'boolean' && typeof data.state === 'string';
 }
 
-async function readRefreshBody(response) {
+async function readJson(response) {
   try {
     const data = await response.json();
-    return validRefreshInfo(data) ? data : null;
+    return data && typeof data === 'object' ? data : null;
   } catch (error) {
     return null;
   }
 }
 
+async function readRefreshBody(response) {
+  const data = await readJson(response);
+  return validRefreshInfo(data) ? data : null;
+}
+
 function reloadAfterCollection() {
-  // Filters, search, sort and page live in `state`/URL and are untouched; the detail dialog is separate and stays open.
+  // Filters, search, sort and page live in `state`/URL and are untouched; the detail dialog stays open and an editor draft is never replaced.
   loadListings();
   loadFacets();
   loadStatus();
+  refreshOpenDetail();
 }
 
 async function loadRefresh(keepNote) {
@@ -966,17 +1026,27 @@ async function loadRefresh(keepNote) {
 }
 
 async function requestRefresh() {
-  const button = $('refresh-data');
-  if (button.getAttribute('aria-disabled') === 'true' || refreshPosting) return;
+  await postRefresh('/api/refresh', false);
+}
+
+// Global refresh (selected=false) or selected-listing fetch (selected=true). Both use the same
+// shared queue/cooldown state; only GETs poll, and a POST is never resent automatically.
+async function postRefresh(url, selected) {
+  if (refreshPosting) return;
+  if (!selected && $('refresh-data').getAttribute('aria-disabled') === 'true') return;
+  const target = selected ? { id: view ? view.id : null, gen: dialogGen } : null;
+  // A selected-fetch result is only applied to the listing/dialog that issued it; the shared refresh status always updates.
+  const sameTarget = () => !selected || (!!view && view.id === target.id && dialogGen === target.gen && $('detail').open);
+  const report = selected ? (text, isError) => { if (sameTarget()) setDetailNotice(text, isError); } : setRefreshNote;
   refreshPosting = true;
-  setRefreshNote('', false);
+  report('', false);
   renderRefresh();
   ++refreshSeq; // invalidate any GET already in flight; GETs are deferred while posting
   window.clearTimeout(refreshTimer);
   refreshTimer = 0;
   let response;
   try {
-    response = await fetch('/api/refresh', {
+    response = await fetch(url, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-RackScout-Refresh': '1' },
@@ -985,56 +1055,123 @@ async function requestRefresh() {
   } catch (error) {
     refreshPosting = false;
     refreshResyncPending = false;
-    setRefreshNote('Refresh request could not be sent (' + (error.message || 'network error') + '). It may or may not have been received; the current state is being re-read.', true);
+    report((selected ? 'Fetch' : 'Refresh') + ' request could not be sent (' + (error.message || 'network error') + '). It may or may not have been received; the current state is being re-read.', true);
     renderRefresh();
     loadRefresh(true);
     return;
   }
-  const data = await readRefreshBody(response);
+  const body = await readJson(response);
+  const data = validRefreshInfo(body) ? body : null;
   refreshPosting = false;
   const resync = refreshResyncPending;
   refreshResyncPending = false;
   if (data) {
-    setRefreshNote('', false);
+    if (!selected) setRefreshNote('', false);
     if (response.status === 429 && !(Number(data.retry_after_seconds) > 0)) {
       const header = Number(response.headers.get('Retry-After'));
       if (header > 0) data.retry_after_seconds = header;
     }
     onRefreshInfo(data);
+    if (selected) report(selectedOutcome(response.status, data), response.status !== 202);
     if (resync) loadRefresh(true);
     return;
   }
-  const detail = response.status === 403 ? 'Manual refresh is not permitted from this page or is disabled.'
-    : response.status === 503 ? 'The server could not process the request right now.'
-    : 'Server responded ' + response.status + '.';
-  setRefreshNote('Refresh not started. ' + detail + ' You can try again.', true);
+  const retryAfter = Number(response.headers.get('Retry-After'));
+  if (selected) {
+    let text;
+    if (response.status === 404) text = 'This listing is no longer active, so there is nothing to fetch.';
+    else if (response.status === 429) {
+      text = 'Not queued: this listing was checked recently or its source is backing off' + (retryAfter > 0 ? '; try again in ' + refreshWaitText(retryAfter) : '') + '.';
+      if (retryAfter > 0 && sameTarget() && view.item) view.item.next_check_after = new Date(Date.now() + retryAfter * 1000).toISOString();
+    } else if (response.status === 403) text = 'Fetching is not permitted from this page or is disabled. Manual edits are unaffected.';
+    else if (response.status === 503) text = 'Fetch not started: the server could not process the request right now. You can try again.';
+    else text = 'Fetch not started: server responded ' + response.status + '. You can try again.';
+    report(text, true);
+  } else {
+    const detail = response.status === 403 ? 'Manual refresh is not permitted from this page or is disabled.'
+      : response.status === 503 ? 'The server could not process the request right now.'
+      : 'Server responded ' + response.status + '.';
+    report('Refresh not started. ' + detail + ' You can try again.', true);
+  }
   renderRefresh();
   loadRefresh(true);
+}
+
+function selectedOutcome(status, info) {
+  if (status === 202) {
+    return 'Fetch requested for this listing only. Your manual edits and drafts are untouched. Progress appears in the Data refresh panel; the result may come from cached data, honor a source back-off or be partial.';
+  }
+  if (status === 409) return 'Not queued: another collection is already queued or running.' + (info.message ? ' ' + info.message : '');
+  if (status === 429) return 'Not queued: fetching is cooling down' + (Number(info.retry_after_seconds) > 0 ? '; try again in ' + refreshWaitText(info.retry_after_seconds) : '') + '.';
+  return info.message || 'Fetch was not queued (server responded ' + status + ').';
 }
 
 // ---------------------------------------------------------------------------
 // Detail dialog
 // ---------------------------------------------------------------------------
 
+function setDetailNotice(text, isError) {
+  const node = $('detail-notice');
+  node.textContent = text;
+  node.hidden = !text;
+  node.classList.toggle('err', !!isError);
+}
+
 function openDetail(id, button) {
+  dialogGen += 1;
   opener = button;
   openerId = String(id);
-  const rowState = rowStates.get(String(id));
-  const seq = ++detailSeq;
   const dialog = $('detail');
-  $('detail-title').textContent = 'Listing details';
-  $('detail-body').replaceChildren(el('p', { className: 'subtle', text: 'Loading listing details…' }));
+  editor = null;
+  editorLoading = 0;
+  setDetailNotice('', false);
   if (!dialog.open) dialog.showModal();
   $('close').focus();
-  fetchJson('/api/listings/' + encodeURIComponent(id))
-    .then(item => {
-      // Detail has no filter context; keep the classification of the row the user opened.
-      if (seq === detailSeq) renderDetail(rowState ? { ...item, match_state: rowState } : item);
-    })
-    .catch(error => {
-      if (seq !== detailSeq) return;
-      $('detail-body').replaceChildren(el('p', { className: 'err', text: 'Could not load listing details: ' + (error.message || 'network error') }));
-    });
+  loadDetail(id, { rowState: rowStates.get(String(id)) });
+}
+
+// Loads the listing and its manual-editor data. A stale response (another load/editor started
+// meanwhile) is discarded so it can never overwrite a draft or a newer view. `silent` re-renders
+// in place without a loading placeholder and is only used when no editor is open.
+async function loadDetail(id, options) {
+  const opts = options || {};
+  const seq = ++detailSeq;
+  const sid = String(id);
+  if (!opts.silent) {
+    editor = null;
+    editorLoading = 0;
+    $('close').disabled = false;
+    if (!opts.notice) setDetailNotice('', false);
+    $('detail-title').textContent = 'Listing details';
+    $('detail-body').replaceChildren(el('p', { className: 'subtle', text: 'Loading listing details…' }));
+  }
+  const base = '/api/listings/' + encodeURIComponent(id);
+  const [itemResult, manualResult] = await Promise.allSettled([fetchJson(base), fetchJson(base + '/manual')]);
+  if (seq !== detailSeq) return;
+  if (itemResult.status === 'rejected') {
+    if (!opts.silent) {
+      $('detail-body').replaceChildren(el('p', { className: 'err', text: 'Could not load listing details: ' + (itemResult.reason && itemResult.reason.message || 'network error') }));
+    }
+    return;
+  }
+  openerId = sid;
+  // Detail has no filter context; keep the classification of the row the user opened.
+  const rowState = rowStates.get(sid) || opts.rowState;
+  const item = rowState ? { ...itemResult.value, match_state: rowState } : itemResult.value;
+  view = {
+    id: sid,
+    item,
+    manual: manualResult.status === 'fulfilled' && manualResult.value && typeof manualResult.value === 'object' ? manualResult.value : null,
+    confirming: false,
+  };
+  renderDetail(item);
+  if (opts.notice) setDetailNotice(opts.notice, false);
+  if (opts.focus) $('detail-title').focus();
+}
+
+function refreshOpenDetail() {
+  if (!$('detail').open || editor || editorLoading || !view || view.confirming) return;
+  loadDetail(view.id, { silent: true });
 }
 
 function restoreFocus() {
@@ -1063,6 +1200,8 @@ function renderDetail(item) {
     el('span', { className: 'badge ' + (item.match_state === 'match' ? 'good' : 'review'), text: item.match_state === 'match' ? 'Match' : 'Unverified lead — not a confirmed match' }),
     document.createTextNode(' '),
     el('span', { className: 'badge ' + badge.cls, text: badge.text }),
+    item.origin === 'manual' ? document.createTextNode(' ') : null,
+    item.origin === 'manual' ? el('span', { className: 'badge manual', text: 'Manual configuration — entered by you' }) : null,
   ]);
   nodes.push(states);
   nodes.push(el('div', { className: 'detail-price', text: total || 'Total unknown' }));
@@ -1073,7 +1212,9 @@ function renderDetail(item) {
   if (kind) priceNotes.push(kind);
   nodes.push(el('p', { className: 'subtle', text: priceNotes.join(' · ') }));
   if (item.shipping_context) nodes.push(el('p', { className: 'subtle', text: item.shipping_context + ' Destination of this quote is unconfirmed.' }));
+  nodes.push(...detailActions());
   nodes.push(offerSection(item));
+  if (item.origin === 'manual') nodes.push(manualSection(item));
 
   if (item.title) nodes.push(el('p', { className: 'subtle', text: 'Listing title: ' + item.title }));
   appendCallout(nodes, 'Warnings', item.warnings);
@@ -1082,7 +1223,7 @@ function renderDetail(item) {
   const list = el('dl');
   dlRow(list, 'Processors', item.cpu_model ? (item.cpu_count == null ? '?' : item.cpu_count) + '× ' + item.cpu_model + ' · ' + (item.total_cores == null ? 'cores unknown' : item.total_cores + ' installed cores') : 'Unknown');
   dlRow(list, 'Socket population', socketLabel(item) + ' — ' + populatedLabel(item.cpu_count));
-  if (item.variant_label) dlRow(list, offerOf(item).kind === 'historical_configuration' ? 'Historical option' : 'Option', item.variant_label);
+  if (item.variant_label) dlRow(list, item.origin === 'manual' ? 'Manual option' : offerOf(item).kind === 'historical_configuration' ? 'Historical option' : 'Option', item.variant_label);
   dlRow(list, 'Memory', ramDisplay(item) + (ramPairingNote(item) ? ' — ' + ramPairingNote(item) : ''));
   dlRow(list, 'Drive bays', item.drive_bays == null ? 'Unknown' : item.drive_bays + ' × ' + driveSizeLabel(item.drive_size, true));
   dlRow(list, 'Storage', storageStatus(item));
@@ -1096,13 +1237,20 @@ function renderDetail(item) {
   dlRow(list, 'Source updated', formatDate(item.source_updated_at) || 'Unknown');
   dlRow(list, 'Last seen', formatDate(item.last_seen_at) || 'Unknown');
   dlRow(list, 'Last detail attempt', formatDate(item.last_checked_at) || 'Never');
-  dlRow(list, 'Page verification', item.page_verification_current ? 'Current' : item.page_verified_at ? 'Not current — historical evidence only' : 'Never verified');
-  dlRow(list, 'Page last verified', formatDate(item.page_verified_at) || 'Never');
+  if (item.origin === 'manual') {
+    dlRow(list, 'Price verification', offerOf(item).kind === 'manual_configuration' ? 'Entered by you; not independently verified or browser-verified' : 'No price confirmed by you');
+  } else {
+    dlRow(list, 'Page verification', item.page_verification_current ? 'Current' : item.page_verified_at ? 'Not current — historical evidence only' : 'Never verified');
+    dlRow(list, 'Page last verified', formatDate(item.page_verified_at) || 'Never');
+  }
   nodes.push(list);
   nodes.push(el('p', { className: 'benchmark-note', text: 'Not stated means the listing does not say; it does not mean not included. Only Not included reflects confirmed or inferred absence.' }));
 
+  const siblings = siblingsSection();
+  if (siblings) nodes.push(siblings);
   nodes.push(benchmarkSection(item));
   nodes.push(evidenceSection(item));
+  if (item.origin === 'manual' && view && view.manual && view.manual.original) nodes.push(originalSection(view.manual.original));
 
   const href = safeEbayUrl(item.source_url);
   if (href) {
@@ -1111,6 +1259,7 @@ function renderDetail(item) {
     nodes.push(link);
   }
   $('detail-body').replaceChildren(...nodes);
+  renderFetchControl();
 }
 
 function detailStatusLabel(status) {
@@ -1188,6 +1337,903 @@ function evidenceSection(item) {
   }
   box.append(list);
   return box;
+}
+
+// ---------------------------------------------------------------------------
+// Manual configurations: detail actions, siblings, selected fetch control
+// ---------------------------------------------------------------------------
+
+function actionButton(text, onClick, id, extraClass) {
+  const button = el('button', { className: 'action' + (extraClass ? ' ' + extraClass : ''), text, attrs: { type: 'button', id } });
+  button.addEventListener('click', onClick);
+  return button;
+}
+
+function detailActions() {
+  const manual = view && view.manual;
+  const item = view.item;
+  const bar = el('div', { className: 'detail-actions', attrs: { role: 'group', 'aria-label': 'Listing actions' } });
+  if (manual && manual.enabled === true) {
+    bar.append(actionButton('Edit details', () => openEditor(view.id, 'edit'), 'edit-details'));
+    bar.append(actionButton('Add configuration', () => openEditor(view.id, 'add'), 'add-config'));
+  }
+  const fetchButton = actionButton('Fetch seller details', onFetchClick, 'fetch-seller');
+  fetchButton.setAttribute('aria-disabled', 'true');
+  fetchButton.setAttribute('aria-describedby', 'fetch-reason');
+  bar.append(fetchButton);
+  if (manual && manual.enabled === true && item.origin === 'manual') {
+    bar.append(actionButton('Remove manual configuration', showRemoveConfirm, 'remove-manual', 'danger'));
+  }
+  const nodes = [bar, el('div', { attrs: { id: 'remove-slot' } })];
+  const note = el('p', { className: 'subtle action-note' });
+  if (!manual) {
+    note.append(document.createTextNode('Manual editing availability could not be loaded. '));
+    note.append(actionButton('Retry', () => loadDetail(view.id, { focus: true }), 'manual-retry', 'inline'));
+  } else if (manual.enabled !== true) {
+    note.textContent = 'Manual editing is disabled on this server.';
+  } else if (item.origin === 'manual') {
+    note.textContent = 'Edit details changes this manual configuration only. Add configuration creates another independent option from the same source listing.';
+  } else {
+    note.textContent = 'Edit details saves a manual copy of this row and hides the source row while a copy exists. The original source data and evidence are kept. Add configuration creates a separate manual option without copying any price.';
+  }
+  nodes.push(note);
+  nodes.push(el('p', { className: 'subtle action-note', attrs: { id: 'fetch-reason' } }));
+  return nodes;
+}
+
+function fetchState() {
+  const item = view && view.item;
+  const info = refreshInfo;
+  if (!item) return { ok: false, reason: 'Listing not loaded.' };
+  if (view.manual && view.manual.fetch_enabled === false) return { ok: false, reason: 'Fetching seller details is disabled on this server. Manual editing still works.' };
+  if (!info) return { ok: false, reason: 'Checking whether fetching is available…' };
+  if (!info.enabled) return { ok: false, reason: 'Fetching is disabled on this server. Manual editing still works.' };
+  if (refreshPosting) return { ok: false, reason: 'A request is being sent…' };
+  if (refreshActive(info)) return { ok: false, reason: 'A collection is already queued or running; wait for it to finish.' };
+  const next = item.next_check_after ? Date.parse(item.next_check_after) : NaN;
+  if (!Number.isNaN(next) && next > Date.now()) {
+    return { ok: false, reason: 'This listing was checked recently or its source is backing off. Next check allowed after ' + (formatDate(item.next_check_after) || 'a later time') + '.' };
+  }
+  if (refreshCooldown(info)) return { ok: false, reason: 'Fetching is rate limited; available again in ' + refreshWaitText(info.retry_after_seconds) + '.' };
+  if (info.can_refresh !== true) return { ok: false, reason: 'Fetching is not available right now.' };
+  return { ok: true, reason: 'Fetches seller details for this listing only (not the whole inventory). It uses cached data and honors source back-offs, so it may be partial. It never changes your manual values.' };
+}
+
+function scheduleFetchExpiry() {
+  const next = view && view.item && view.item.next_check_after ? Date.parse(view.item.next_check_after) : NaN;
+  if (Number.isNaN(next) || next <= Date.now()) return;
+  const id = view.id;
+  const gen = dialogGen;
+  // Read-only re-render when the per-listing cooldown ends; it never sends a request.
+  fetchTimer = window.setTimeout(() => {
+    fetchTimer = 0;
+    if (view && view.id === id && dialogGen === gen) renderFetchControl();
+  }, Math.min(next - Date.now() + 250, 2147483000));
+}
+
+function renderFetchControl() {
+  const button = $('fetch-seller');
+  const reason = $('fetch-reason');
+  window.clearTimeout(fetchTimer);
+  fetchTimer = 0;
+  if (!button || !reason || !view) return;
+  scheduleFetchExpiry();
+  const status = fetchState();
+  button.setAttribute('aria-disabled', status.ok ? 'false' : 'true');
+  button.textContent = refreshPosting ? 'Requesting…' : 'Fetch seller details';
+  if (reason.textContent !== status.reason) reason.textContent = status.reason;
+}
+
+function onFetchClick() {
+  const button = $('fetch-seller');
+  if (!button || button.getAttribute('aria-disabled') === 'true' || !view) return;
+  postRefresh('/api/listings/' + encodeURIComponent(view.id) + '/refresh', true);
+}
+
+function showRemoveConfirm() {
+  const slot = $('remove-slot');
+  if (!slot || !view || !view.manual) return;
+  view.confirming = true;
+  const panel = buildRemovePanel(view.id, () => view.manual && view.manual.revision, () => {
+    if (view) view.confirming = false;
+    slot.replaceChildren();
+    const trigger = $('remove-manual');
+    if (trigger) trigger.focus();
+  });
+  slot.replaceChildren(panel.node);
+  panel.cancel.focus();
+}
+
+// Explicit two-step removal. Deletes only the manual copy; source data is untouched.
+function buildRemovePanel(id, getRevision, onCancel) {
+  const seq = detailSeq;
+  let busy = false;
+  const status = el('p', { className: 'err', attrs: { role: 'alert' } });
+  const confirmButton = el('button', { className: 'action danger', text: 'Yes, remove this manual configuration', attrs: { type: 'button' } });
+  const cancel = el('button', { className: 'action', text: 'Keep it', attrs: { type: 'button' } });
+  const node = el('div', { className: 'callout remove-panel', attrs: { role: 'group', 'aria-label': 'Confirm removal' } }, [
+    el('strong', { text: 'Remove this manual configuration?' }),
+    el('p', { text: 'Its edited values, saved price and notes are deleted. Source data is not changed; the source listing reappears in the inventory once no manual configuration remains for it. This cannot be undone.' }),
+    status,
+    el('div', { className: 'editor-actions' }, [confirmButton, cancel]),
+  ]);
+  cancel.addEventListener('click', () => {
+    if (!busy) onCancel();
+  });
+  confirmButton.addEventListener('click', async () => {
+    if (busy) return;
+    const revision = Number(getRevision());
+    if (!Number.isSafeInteger(revision) || revision < 1) {
+      status.textContent = 'The current revision is unknown. Reload this listing and try again.';
+      return;
+    }
+    busy = true;
+    confirmButton.setAttribute('aria-disabled', 'true');
+    confirmButton.textContent = 'Removing…';
+    status.textContent = '';
+    let response;
+    try {
+      response = await manualRequest('DELETE', id, { revision });
+    } catch (error) {
+      busy = false;
+      confirmButton.setAttribute('aria-disabled', 'false');
+      confirmButton.textContent = 'Yes, remove this manual configuration';
+      status.textContent = 'Result unknown (' + (error.message || 'network error') + '). It may have been removed. Reload the listing to check before trying again; nothing was resent.';
+      return;
+    }
+    const data = await readJson(response);
+    busy = false;
+    if (response.ok && data && data.deleted_id != null) {
+      loadListings();
+      if (seq !== detailSeq) return;
+      editor = null;
+      const target = data.source_id != null ? data.source_id : data.deleted_id;
+      loadDetail(target, { notice: 'Manual configuration removed. Source data was not changed.', focus: true });
+      return;
+    }
+    confirmButton.setAttribute('aria-disabled', 'false');
+    confirmButton.textContent = 'Yes, remove this manual configuration';
+    if (response.status === 409) {
+      status.textContent = 'Not removed: this configuration changed since you opened it (revision conflict). Reload the listing to see the latest version, then decide again.';
+    } else if (response.status === 404) {
+      status.textContent = 'This manual configuration no longer exists. Reload the listing.';
+      loadListings();
+    } else if (response.status === 403) {
+      status.textContent = 'Manual editing is not permitted from this page or is disabled.';
+    } else {
+      const messages = detailMessages(data);
+      status.textContent = 'Not removed: ' + (messages.length ? messages.join(' ') : 'server responded ' + response.status + '.') + (response.status >= 500 ? ' The result may be unknown; reload to check.' : '');
+    }
+  });
+  return { node, cancel };
+}
+
+function shippingPhrase(value) {
+  const money = formatMoney(value);
+  if (money == null) return 'shipping unknown';
+  return money === '$0.00' ? 'free shipping' : money + ' shipping';
+}
+
+function pairStatusText(config) {
+  if (typeof config.price_pair_status === 'string') {
+    return ['confirmed', 'paired', 'manual_configuration'].includes(config.price_pair_status) ? 'Price entered by you' : 'Price not confirmed';
+  }
+  return config.price_confirmed === true ? 'Price entered by you' : 'Price not confirmed';
+}
+
+function siblingsSection() {
+  const manual = view && view.manual;
+  const configs = manual && Array.isArray(manual.configurations) ? manual.configurations : [];
+  if (!configs.length) return null;
+  const canEdit = manual.enabled === true;
+  const section = el('section', { className: 'siblings', attrs: { 'aria-label': 'Manual configurations of this listing' } });
+  section.append(
+    el('h3', { text: 'Manual configurations for this listing' }),
+    el('p', { className: 'subtle', text: 'Each option is its own row with its own RAM and price. Options are never combined or expanded.' }),
+  );
+  const list = el('ul', { className: 'sibling-list' });
+  for (const config of configs) {
+    const name = config.label || 'Manual configuration';
+    const current = String(config.id) === view.id;
+    const ram = config.ram_gb == null ? 'RAM unknown' : config.ram_gb === 0 ? 'No RAM included' : config.ram_gb + ' GB RAM';
+    const price = formatMoney(config.item_price);
+    const line = [ram, price ? price + ' item, ' + shippingPhrase(config.shipping_price) : 'no item price entered', pairStatusText(config)].join(' · ');
+    const buttons = el('div', { className: 'sibling-actions' });
+    const viewButton = el('button', { className: 'action', text: current ? 'Viewing' : 'View', attrs: { type: 'button', 'aria-label': 'View ' + name } });
+    if (current) viewButton.disabled = true;
+    viewButton.addEventListener('click', () => loadDetail(config.id, { focus: true }));
+    buttons.append(viewButton);
+    if (canEdit) {
+      const editButton = el('button', { className: 'action', text: 'Edit', attrs: { type: 'button', 'aria-label': 'Edit ' + name } });
+      editButton.addEventListener('click', () => openEditor(config.id, 'edit'));
+      const addButton = el('button', { className: 'action', text: 'Add similar', attrs: { type: 'button', 'aria-label': 'Add a configuration based on ' + name } });
+      addButton.addEventListener('click', () => openEditor(config.id, 'add'));
+      buttons.append(editButton, addButton);
+    }
+    list.append(el('li', null, [
+      el('div', { className: 'sibling-text' }, [el('strong', { text: name + (current ? ' (this view)' : '') }), small(line)]),
+      buttons,
+    ]));
+  }
+  section.append(list);
+  return section;
+}
+
+function manualSection(item) {
+  const meta = item.manual || {};
+  const box = el('div', { className: 'callout manual-callout' }, [el('strong', { text: 'Manual configuration — entered by you' })]);
+  const facts = [];
+  if (item.variant_label) facts.push('Label: ' + item.variant_label);
+  const created = formatDate(meta.created_at);
+  const updated = formatDate(meta.updated_at);
+  if (created) facts.push('Created ' + created);
+  if (updated) facts.push('Last edited ' + updated);
+  const names = manualFields(item).map(key => (specOf(key) ? specOf(key).label : key));
+  facts.push(names.length ? 'Fields you set: ' + names.join(', ') + '. Every other value keeps its original source confidence.' : 'You have not changed any field; all values are the original source values.');
+  facts.push(meta.price_confirmed === true
+    ? 'You confirmed the item price for this configuration. It is a price entered by you, not independently verified or browser-verified.'
+    : 'You have not confirmed a price for this configuration; any price shown is an unpaired source starting quote or unknown.');
+  if (meta.notes) facts.push('Notes: ' + meta.notes);
+  box.append(el('ul', null, facts.map(text => el('li', { text }))));
+  if (meta.source_changed) {
+    box.append(el('p', { className: 'err', text: 'The source listing changed after this copy was made. Your saved values were not overwritten; review them against the source.' }));
+  }
+  return box;
+}
+
+// Read-only original/baseline source information. The server shape is not rigid, so scalars,
+// string lists and evidence-like objects are all rendered as plain text.
+function humanize(key) {
+  const text = String(key).replace(/_/g, ' ');
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function plainValue(key, value) {
+  if (value == null) return 'Unknown';
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  if (typeof value === 'string' && /price/.test(key) && formatMoney(value)) return formatMoney(value);
+  return String(value);
+}
+
+function originalRows(list, prefix, value, depth, counter) {
+  for (const [key, entry] of Object.entries(value)) {
+    if (counter.n >= 200) return;
+    const label = humanize(prefix ? prefix + ' · ' + key : key);
+    if (Array.isArray(entry)) {
+      const lines = entry.slice(0, 50).map(part => {
+        if (part == null || typeof part !== 'object') return plainValue(key, part);
+        const head = [part.field, part.state].filter(Boolean).join(' · ');
+        const text = part.text || part.message || '';
+        if (head || text) return (head ? head + (text ? ': ' : '') : '') + text;
+        return Object.entries(part).filter(([, v]) => v == null || typeof v !== 'object').map(([k, v]) => k + ': ' + plainValue(k, v)).join(', ');
+      });
+      counter.n += 1;
+      list.append(el('dt', { text: label }), el('dd', { className: 'lines', text: lines.length ? lines.join('\n') : 'None' }));
+    } else if (entry && typeof entry === 'object') {
+      if (depth < 3) originalRows(list, prefix ? prefix + ' · ' + key : key, entry, depth + 1, counter);
+    } else {
+      counter.n += 1;
+      list.append(el('dt', { text: label }), el('dd', { text: plainValue(key, entry) }));
+    }
+  }
+}
+
+function originalSection(original) {
+  const details = el('details', { className: 'original-detail' }, [el('summary', { text: 'Original source specifications and evidence (read-only)' })]);
+  if (!original || typeof original !== 'object') {
+    details.append(el('p', { className: 'subtle', text: 'No original data available.' }));
+    return details;
+  }
+  const list = el('dl');
+  originalRows(list, '', original, 0, { n: 0 });
+  details.append(list);
+  return details;
+}
+
+// ---------------------------------------------------------------------------
+// Manual configuration editor
+// ---------------------------------------------------------------------------
+
+const COMPONENT_OPTIONS = [['unknown', 'Unknown'], ['present', 'Included'], ['missing', 'Missing']];
+const ESSENTIAL_KEYS = { cpu_included: 'cpu', psu: 'psu', cooling: 'cooling', nic: 'nic', drive_path: 'drive_path' };
+const COMPONENT_HELP = 'Unknown = not stated. Missing excludes this configuration from confirmed hardware.';
+const EDIT_SPECS = [
+  { group: 'Server', key: 'model', label: 'Server model', kind: 'model', config: true, help: 'Choose a catalog model from this vendor, or leave unknown.' },
+  { group: 'Processor', key: 'cpu_model', label: 'CPU model', kind: 'text', max: 100, config: true, help: 'Blank means unknown.' },
+  { group: 'Processor', key: 'cpu_count', label: 'Populated CPUs', kind: 'int', min: 1, max: 8, config: true, help: 'Whole number 1 to 8. Blank means unknown.' },
+  { group: 'Processor', key: 'total_cores', label: 'Total installed cores', kind: 'int', min: 1, max: 8192, config: true, help: 'All populated CPUs combined. If you change the CPU, enter the new total or leave blank (unknown).' },
+  { group: 'Memory', key: 'ram_gb', label: 'Installed RAM (GB)', kind: 'int', min: 0, max: 1048576, config: true, help: 'Enter 0 if this configuration includes no RAM. Leave blank if unknown.' },
+  { group: 'Chassis and storage', key: 'drive_bays', label: 'Drive bays', kind: 'int', min: 1, max: 128, config: true, help: 'Whole number 1 to 128. Blank means unknown.' },
+  { group: 'Chassis and storage', key: 'drive_size', label: 'Drive form factor', kind: 'select', config: true, options: [['', 'Unknown'], ['SFF', '2.5″ SFF'], ['LFF', '3.5″ LFF']], help: 'Bay size.' },
+  { group: 'Chassis and storage', key: 'storage_state', label: 'Storage', kind: 'select', config: true, options: [['unknown', 'Unknown'], ['diskless', 'No storage included'], ['included', 'Storage included']], help: 'Whether drives are included.' },
+  { group: 'Chassis and storage', key: 'damage', label: 'Chassis damage', kind: 'select', options: [['', 'Unknown'], ['no', 'No damage'], ['yes', 'Damaged']], help: 'Damage you observed or the seller stated.' },
+  { group: 'Components', key: 'cpu_included', label: 'CPUs installed', kind: 'select', component: true, config: true, options: COMPONENT_OPTIONS, help: COMPONENT_HELP },
+  { group: 'Components', key: 'psu', label: 'Power supplies', kind: 'select', component: true, config: true, options: COMPONENT_OPTIONS, help: COMPONENT_HELP },
+  { group: 'Components', key: 'cooling', label: 'Cooling (fans and heatsinks)', kind: 'select', component: true, config: true, options: COMPONENT_OPTIONS, help: COMPONENT_HELP },
+  { group: 'Components', key: 'nic', label: 'Network card / LOM', kind: 'select', component: true, config: true, options: COMPONENT_OPTIONS, help: COMPONENT_HELP },
+  { group: 'Components', key: 'drive_path', label: 'Drive backplane / caddies', kind: 'select', component: true, config: true, options: COMPONENT_OPTIONS, help: COMPONENT_HELP },
+  { group: 'Price', key: 'item_price', label: 'Item price (USD)', kind: 'money', help: 'Up to two decimals, 0 to 99,999,999.99. Blank means unknown.' },
+  { group: 'Price', key: 'shipping_price', label: 'Shipping (USD)', kind: 'money', help: 'Blank means shipping unknown. Enter 0 only if shipping is explicitly free.' },
+];
+
+function specOf(key) {
+  return EDIT_SPECS.find(spec => spec.key === key);
+}
+
+function normalizeComponent(value) {
+  if (value === 'present' || value === 'confirmed' || value === true) return 'present';
+  if (value === 'missing') return 'missing';
+  return 'unknown';
+}
+
+function pickValue(values, spec) {
+  if (values[spec.key] !== undefined) return values[spec.key];
+  const essential = ESSENTIAL_KEYS[spec.key];
+  const states = values.essential_states;
+  if (essential && states && typeof states === 'object' && states[essential] !== undefined) return states[essential];
+  return null;
+}
+
+function toRaw(spec, value) {
+  if (spec.key === 'damage') return value === true ? 'yes' : value === false ? 'no' : '';
+  if (spec.component) return normalizeComponent(value);
+  if (spec.key === 'storage_state') return value === 'diskless' || value === 'included' ? value : 'unknown';
+  return value == null ? '' : String(value);
+}
+
+function fromRaw(spec, raw) {
+  const text = String(raw == null ? '' : raw);
+  if (spec.kind === 'int') {
+    const trimmed = text.trim();
+    if (trimmed === '') return { ok: true, value: null };
+    const number = Number(trimmed);
+    if (!/^\d+$/.test(trimmed) || !Number.isSafeInteger(number) || number < spec.min || number > spec.max) {
+      return { ok: false, error: spec.label + ' must be a whole number from ' + formatInt(spec.min) + ' to ' + formatInt(spec.max) + ', or blank if unknown.' };
+    }
+    return { ok: true, value: number };
+  }
+  if (spec.kind === 'text') {
+    const trimmed = text.trim();
+    if (trimmed === '') return { ok: true, value: null };
+    if (trimmed.length > spec.max || /[\u0000-\u001f\u007f]/.test(trimmed)) return { ok: false, error: spec.label + ' must be plain text of at most ' + spec.max + ' characters.' };
+    return { ok: true, value: trimmed };
+  }
+  if (spec.kind === 'money') {
+    const trimmed = text.trim();
+    if (trimmed === '') return { ok: true, value: null };
+    if (!/^\d{1,8}(\.\d{1,2})?$/.test(trimmed)) return { ok: false, error: spec.label + ' must be a number such as 450 or 450.00 (at most two decimals, up to 99,999,999.99), or blank if unknown.' };
+    return { ok: true, value: trimmed };
+  }
+  if (spec.key === 'damage') return { ok: true, value: text === 'yes' ? true : text === 'no' ? false : null };
+  if (spec.kind === 'model' || spec.key === 'drive_size') return { ok: true, value: text === '' ? null : text };
+  return { ok: true, value: text };
+}
+
+function displayRaw(spec, raw) {
+  if (spec.options) {
+    const found = spec.options.find(option => option[0] === raw);
+    return found ? found[1] : raw || 'Unknown';
+  }
+  if (raw === '') return 'Unknown';
+  if (spec.kind === 'money') return formatMoney(raw) || raw;
+  if (spec.kind === 'model') return modelName(editor && editor.item.vendor, raw) || raw;
+  return raw;
+}
+
+function editorSig(ed) {
+  return JSON.stringify([ed.label, ed.notes, Object.keys(ed.touched).sort().map(key => [key, ed.raw[key]]), ed.price_confirmed]);
+}
+
+function editorDirty() {
+  return !!editor && editorSig(editor) !== editor.initialSig;
+}
+
+function origValue(key) {
+  const original = editor && editor.data.original;
+  if (!original || typeof original !== 'object') return undefined;
+  for (const bag of [original.values, original.fields, original]) {
+    if (bag && typeof bag === 'object' && !Array.isArray(bag) && Object.prototype.hasOwnProperty.call(bag, key)) return bag[key];
+  }
+  return undefined;
+}
+
+function manualRequest(method, id, body) {
+  return fetch('/api/listings/' + encodeURIComponent(id) + '/manual', {
+    method,
+    credentials: 'same-origin',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-RackScout-Edit': '1' },
+    body: JSON.stringify(body),
+  });
+}
+
+function detailMessages(data) {
+  const detail = data && data.detail !== undefined ? data.detail : data && data.error;
+  if (typeof detail === 'string') return [detail];
+  if (Array.isArray(detail)) {
+    return detail.map(part => {
+      if (typeof part === 'string') return part;
+      if (part && (part.msg || part.message)) return (Array.isArray(part.loc) ? part.loc.join('.') + ': ' : '') + (part.msg || part.message);
+      return null;
+    }).filter(Boolean);
+  }
+  if (detail && typeof detail === 'object') return Object.entries(detail).map(([key, value]) => key + ': ' + String(value));
+  return [];
+}
+
+async function openEditor(id, mode) {
+  const seq = ++detailSeq;
+  editorLoading = seq;
+  editor = null;
+  const sid = String(id);
+  setDetailNotice('', false);
+  $('detail-title').textContent = mode === 'add' ? 'Add configuration' : 'Edit details';
+  $('detail-body').replaceChildren(el('p', { className: 'subtle', text: 'Loading editor…' }));
+  const base = '/api/listings/' + encodeURIComponent(sid);
+  let item;
+  let data;
+  try {
+    [item, data] = await Promise.all([fetchJson(base), fetchJson(base + '/manual')]);
+  } catch (error) {
+    if (seq !== detailSeq) return;
+    editorLoading = 0;
+    const back = actionButton('Back to details', () => loadDetail(sid, { focus: true }), 'editor-back');
+    $('detail-body').replaceChildren(el('p', { className: 'err', text: 'Could not load the editor: ' + (error.message || 'network error') }), back);
+    return;
+  }
+  if (seq !== detailSeq) return;
+  editorLoading = 0;
+  if (!data || data.enabled !== true) {
+    const back = actionButton('Back to details', () => loadDetail(sid, { focus: true }), 'editor-back');
+    $('detail-body').replaceChildren(el('p', { className: 'err', text: 'Manual editing is disabled on this server.' }), back);
+    return;
+  }
+  editor = buildEditorState(item, data, mode, sid);
+  renderEditor();
+  $('detail-title').focus();
+}
+
+function buildEditorState(item, data, mode, id) {
+  const values = data.values && typeof data.values === 'object' ? data.values : {};
+  const explicit = data.fields && typeof data.fields === 'object' && !Array.isArray(data.fields) ? data.fields : {};
+  const base = {};
+  const raw = {};
+  const touched = {};
+  const initialTouched = {};
+  for (const spec of EDIT_SPECS) {
+    // A new option never inherits another option's price or shipping.
+    base[spec.key] = mode === 'add' && spec.kind === 'money' ? '' : toRaw(spec, pickValue(values, spec));
+    raw[spec.key] = base[spec.key];
+  }
+  for (const spec of EDIT_SPECS) {
+    if (!Object.prototype.hasOwnProperty.call(explicit, spec.key)) continue;
+    if (mode === 'add' && spec.kind === 'money') continue;
+    touched[spec.key] = true;
+    initialTouched[spec.key] = true;
+    raw[spec.key] = toRaw(spec, explicit[spec.key]);
+  }
+  const ed = {
+    id,
+    mode,
+    isManual: item.origin === 'manual',
+    item,
+    data,
+    base,
+    raw,
+    touched,
+    initialTouched,
+    pendingSource: {},
+    label: mode === 'add' ? '' : String(data.label || item.variant_label || 'Manual configuration').slice(0, 120),
+    notes: mode === 'add' ? '' : String(data.notes || ''),
+    price_confirmed: mode === 'add' ? false : data.price_confirmed === true,
+    submitting: false,
+    controls: {},
+    alertEl: null,
+  };
+  ed.initialSig = editorSig(ed);
+  return ed;
+}
+
+function setErr(name, message) {
+  const node = $('ed-' + name + '-err');
+  const input = $('ed-' + name);
+  if (node) {
+    node.textContent = message || '';
+    node.hidden = !message;
+  }
+  if (input) {
+    if (message) input.setAttribute('aria-invalid', 'true');
+    else input.removeAttribute('aria-invalid');
+  }
+}
+
+function clearAllErrors() {
+  for (const name of ['label', 'notes', 'price_confirmed', ...EDIT_SPECS.map(spec => spec.key)]) setErr(name, '');
+}
+
+function hideEditorAlert() {
+  if (editor && editor.alertEl) {
+    editor.alertEl.hidden = true;
+    editor.alertEl.replaceChildren();
+  }
+}
+
+function showEditorAlert(title, messages, buttons) {
+  const box = editor && editor.alertEl;
+  if (!box) return;
+  const nodes = [el('strong', { text: title })];
+  if (messages && messages.length) nodes.push(el('ul', null, messages.map(message => el('li', { text: message }))));
+  if (buttons && buttons.length) nodes.push(el('div', { className: 'editor-actions' }, buttons));
+  box.replaceChildren(...nodes);
+  box.hidden = false;
+  box.focus();
+}
+
+// Discard guard rendered inside the dialog (no window.confirm), used by Cancel, Close and Escape.
+function guardDiscard(proceed) {
+  if (editor && editor.submitting) return;
+  if (!editor || !editorDirty()) {
+    proceed();
+    return;
+  }
+  const discard = actionButton('Discard changes', proceed, 'editor-discard', 'danger');
+  const keep = actionButton('Keep editing', () => {
+    hideEditorAlert();
+    const first = $('ed-label');
+    if (first) first.focus();
+  }, 'editor-keep');
+  showEditorAlert('Discard unsaved changes?', ['Your draft has not been saved.'], [discard, keep]);
+}
+
+function updateSaveButton() {
+  const button = $('editor-save');
+  if (!button || !editor) return;
+  button.setAttribute('aria-disabled', editor.submitting ? 'true' : 'false');
+  button.textContent = editor.submitting ? 'Saving…' : editor.mode === 'add' ? 'Save new configuration' : 'Save';
+}
+
+function updateSourceNote(spec) {
+  const control = editor.controls[spec.key];
+  if (!control) return;
+  let text = '';
+  if (editor.pendingSource[spec.key]) text = 'The source value will be applied when you save.';
+  else {
+    const original = origValue(spec.key);
+    if (original !== undefined) text = 'Source value: ' + displayRaw(spec, toRaw(spec, original));
+  }
+  control.src.textContent = text;
+  control.src.hidden = text === '';
+}
+
+function clearPriceConfirmation() {
+  const ed = editor;
+  if (!ed || !ed.price_confirmed) return;
+  ed.price_confirmed = false;
+  const box = $('ed-price_confirmed');
+  if (box) box.checked = false;
+  setDetailNotice('Price confirmation cleared because hardware fields changed. Re-check it if the price still applies to this exact configuration.', false);
+}
+
+// Freezes every control in the dialog body (and Close) while a write is in flight so no input can be lost.
+function setEditorFrozen(frozen) {
+  for (const control of $('detail-body').querySelectorAll('input,select,textarea,button')) {
+    if (frozen) {
+      control.dataset.wasDisabled = control.disabled ? '1' : '';
+      control.disabled = true;
+    } else {
+      control.disabled = control.dataset.wasDisabled === '1';
+      delete control.dataset.wasDisabled;
+    }
+  }
+  $('close').disabled = frozen;
+}
+
+function onFieldEdited(spec) {
+  const ed = editor;
+  if (!ed || ed.submitting) return;
+  const control = ed.controls[spec.key];
+  ed.raw[spec.key] = control.input.value;
+  // Editing or explicitly affirming a value is a manual assertion, even if it matches the source.
+  // Reset to source is the deliberate way to remove that assertion.
+  ed.touched[spec.key] = true;
+  ed.pendingSource[spec.key] = false;
+  control.reset.hidden = !ed.touched[spec.key];
+  control.mark.disabled = true;
+  setErr(spec.key, '');
+  updateSourceNote(spec);
+  if (spec.config) clearPriceConfirmation();
+}
+
+function resetField(spec) {
+  const ed = editor;
+  if (!ed || ed.submitting) return;
+  const control = ed.controls[spec.key];
+  delete ed.touched[spec.key];
+  const original = origValue(spec.key);
+  let raw;
+  ed.pendingSource[spec.key] = false;
+  if (original !== undefined) raw = toRaw(spec, original);
+  else if (!ed.initialTouched[spec.key]) raw = ed.base[spec.key];
+  else {
+    raw = spec.kind === 'model' ? '' : spec.options ? (spec.options.find(option => option[0] === '') ? '' : spec.options[0][0]) : '';
+    ed.pendingSource[spec.key] = true;
+  }
+  control.input.value = raw;
+  ed.raw[spec.key] = raw;
+  control.reset.hidden = true;
+  control.mark.disabled = false;
+  setErr(spec.key, '');
+  updateSourceNote(spec);
+  if (spec.config) clearPriceConfirmation();
+  control.input.focus();
+}
+
+function makeInput(spec, id) {
+  const ed = editor;
+  if (spec.kind === 'model' || spec.kind === 'select') {
+    const select = el('select', { attrs: { id } });
+    let options;
+    if (spec.kind === 'model') {
+      const vendor = ed.item.vendor;
+      const catalog = (facetData.models || []).filter(model => !vendor || (facetData.model_vendors || {})[model] === vendor);
+      options = [['', 'Unknown / not selected'], ...catalog.map(model => [model, modelName(vendor, model) || model])];
+      for (const value of [ed.raw[spec.key], ed.base[spec.key]]) {
+        if (value && !options.some(option => option[0] === value)) options.push([value, modelName(vendor, value) || value]);
+      }
+    } else {
+      options = spec.options;
+    }
+    for (const [value, text] of options) select.append(el('option', { text, attrs: { value } }));
+    select.value = ed.raw[spec.key];
+    return select;
+  }
+  const attrs = { id, type: 'text', autocomplete: 'off', spellcheck: 'false' };
+  if (spec.kind === 'int') attrs.inputmode = 'numeric';
+  if (spec.kind === 'money') attrs.inputmode = 'decimal';
+  if (spec.kind === 'text') attrs.maxlength = String(spec.max);
+  if (spec.kind === 'money') attrs.maxlength = '11';
+  const input = el('input', { attrs });
+  input.value = ed.raw[spec.key];
+  return input;
+}
+
+function buildField(spec) {
+  const ed = editor;
+  const id = 'ed-' + spec.key;
+  const input = makeInput(spec, id);
+  const reset = el('button', { className: 'linkbutton', text: 'Reset to source', attrs: { type: 'button', 'aria-label': 'Reset ' + spec.label + ' to the source value' } });
+  reset.hidden = !ed.touched[spec.key];
+  const mark = el('button', { className: 'linkbutton', text: 'Use as manual', attrs: {
+    id: id + '-assert', type: 'button', 'aria-label': 'Use displayed ' + spec.label + ' as a manual value',
+  } });
+  mark.disabled = !!ed.touched[spec.key];
+  const help = el('small', { className: 'field-help', text: spec.help, attrs: { id: id + '-help' } });
+  const src = el('small', { className: 'field-help source-note', attrs: { id: id + '-src' } });
+  const err = el('div', { className: 'field-error', attrs: { id: id + '-err' } });
+  err.hidden = true;
+  input.setAttribute('aria-describedby', id + '-help ' + id + '-src ' + id + '-err');
+  ed.controls[spec.key] = { input, reset, mark, err, src };
+  input.addEventListener(spec.kind === 'model' || spec.kind === 'select' ? 'change' : 'input', () => onFieldEdited(spec));
+  reset.addEventListener('click', () => resetField(spec));
+  mark.addEventListener('click', () => onFieldEdited(spec));
+  const node = el('div', { className: 'field editor-field' }, [
+    el('div', { className: 'field-head' }, [el('label', { text: spec.label, attrs: { for: id } }), mark, reset]),
+    input,
+    help,
+    src,
+    err,
+  ]);
+  updateSourceNote(spec);
+  return node;
+}
+
+function renderEditor() {
+  const ed = editor;
+  ed.controls = {};
+  const verb = ed.mode === 'add' ? 'Add configuration' : 'Edit details';
+  $('detail-title').textContent = verb + ' — ' + modelTitle(ed.item);
+  const form = el('form', { className: 'manual-form', attrs: { id: 'manual-form', novalidate: '', autocomplete: 'off' } });
+  ed.alertEl = el('div', { className: 'callout editor-alert', attrs: { id: 'editor-alert', role: 'alert', tabindex: '-1' } });
+  ed.alertEl.hidden = true;
+  form.append(ed.alertEl);
+
+  let intro;
+  if (ed.mode === 'add') {
+    intro = 'Add configuration creates another independent manual row (its own RAM and price) from the same source listing. No price or shipping is copied; fields you leave alone keep their source values and confidence.';
+  } else if (ed.isManual) {
+    intro = 'You are editing a manual configuration. Only fields you change become manual values; everything else keeps its original source confidence.';
+  } else {
+    intro = 'Saving creates a separate manual configuration and hides this source row while it exists. The original source data and evidence are kept, and only fields you change become manual values.';
+  }
+  form.append(el('p', { className: 'subtle', text: intro }));
+
+  const labelField = el('div', { className: 'field editor-field' }, [
+    el('div', { className: 'field-head' }, [el('label', { text: 'Configuration label (required)', attrs: { for: 'ed-label' } })]),
+    el('input', { attrs: { id: 'ed-label', type: 'text', maxlength: '120', required: '', autocomplete: 'off', placeholder: 'e.g. 128 GB RAM option', 'aria-describedby': 'ed-label-err' } }),
+    el('div', { className: 'field-error', attrs: { id: 'ed-label-err' } }),
+  ]);
+  labelField.querySelector('input').value = ed.label;
+  labelField.querySelector('input').addEventListener('input', event => {
+    ed.label = event.target.value;
+    setErr('label', '');
+  });
+  labelField.lastChild.hidden = true;
+  form.append(labelField);
+
+  const notesField = el('div', { className: 'field editor-field' }, [
+    el('div', { className: 'field-head' }, [el('label', { text: 'Notes', attrs: { for: 'ed-notes' } })]),
+    el('textarea', { attrs: { id: 'ed-notes', maxlength: '2000', rows: '3', 'aria-describedby': 'ed-notes-err' } }),
+    el('div', { className: 'field-error', attrs: { id: 'ed-notes-err' } }),
+  ]);
+  notesField.querySelector('textarea').value = ed.notes;
+  notesField.querySelector('textarea').addEventListener('input', event => {
+    ed.notes = event.target.value;
+    setErr('notes', '');
+  });
+  notesField.lastChild.hidden = true;
+  form.append(notesField);
+
+  const groups = [];
+  for (const spec of EDIT_SPECS) {
+    let group = groups.find(entry => entry.name === spec.group);
+    if (!group) {
+      group = { name: spec.group, specs: [] };
+      groups.push(group);
+    }
+    group.specs.push(spec);
+  }
+  for (const group of groups) {
+    const fieldset = el('fieldset', { className: 'editor-group' }, [el('legend', { text: group.name })]);
+    for (const spec of group.specs) fieldset.append(buildField(spec));
+    if (group.name === 'Price') {
+      const box = el('input', { attrs: { type: 'checkbox', id: 'ed-price_confirmed', 'aria-describedby': 'ed-price_confirmed-help ed-price_confirmed-err' } });
+      box.checked = ed.price_confirmed;
+      box.addEventListener('change', () => {
+        ed.price_confirmed = box.checked;
+        setErr('price_confirmed', '');
+      });
+      fieldset.append(
+        el('label', { className: 'check editor-confirm', attrs: { for: 'ed-price_confirmed' } }, [
+          box,
+          el('span', { text: 'This item price applies to exactly the configuration entered above' }, [
+            el('small', { text: 'Saved as “Price entered by you”. It is not independently verified or browser-verified. Type the price yourself to confirm it; the box clears whenever RAM, CPU or other hardware fields change.', attrs: { id: 'ed-price_confirmed-help' } }),
+          ]),
+        ]),
+        el('div', { className: 'field-error', attrs: { id: 'ed-price_confirmed-err' } }),
+      );
+      fieldset.lastChild.hidden = true;
+    }
+    form.append(fieldset);
+  }
+
+  if (ed.data.original) form.append(originalSection(ed.data.original));
+
+  const save = el('button', { className: 'primary', text: 'Save', attrs: { type: 'submit', id: 'editor-save' } });
+  const cancel = actionButton('Cancel', () => guardDiscard(() => loadDetail(ed.id, { focus: true })), 'editor-cancel');
+  const actions = el('div', { className: 'editor-actions sticky' }, [save, cancel]);
+  form.append(actions);
+  form.addEventListener('submit', event => {
+    event.preventDefault();
+    saveEditor();
+  });
+
+  const nodes = [form, el('div', { attrs: { id: 'remove-slot' } })];
+  if (ed.isManual && ed.mode === 'edit') {
+    const trigger = actionButton('Remove this manual configuration', () => {
+      const slot = $('remove-slot');
+      const panel = buildRemovePanel(ed.id, () => ed.data.revision, () => {
+        slot.replaceChildren();
+        trigger.focus();
+      });
+      slot.replaceChildren(panel.node);
+      panel.cancel.focus();
+    }, 'remove-manual', 'danger');
+    nodes.splice(1, 0, trigger);
+  }
+  $('detail-body').replaceChildren(...nodes);
+  updateSaveButton();
+}
+
+function collectEditor() {
+  const ed = editor;
+  const errors = {};
+  const fields = {};
+  const label = ed.label.trim();
+  if (!label) errors.label = 'Enter a label for this configuration (up to 120 characters).';
+  else if (label.length > 120 || /[\u0000-\u001f\u007f]/.test(label)) errors.label = 'The label must be plain text of at most 120 characters.';
+  if (ed.notes.length > 2000) errors.notes = 'Notes can be at most 2,000 characters.';
+  for (const key of Object.keys(ed.touched)) {
+    const spec = specOf(key);
+    const result = fromRaw(spec, ed.raw[key]);
+    if (result.ok) fields[key] = result.value;
+    else errors[key] = result.error;
+  }
+  if (ed.price_confirmed && !errors.item_price) {
+    if (!ed.touched.item_price) errors.price_confirmed = 'Type the item price yourself to confirm it. A prefilled source price cannot be confirmed automatically.';
+    else if (fields.item_price == null) errors.price_confirmed = 'Enter an item price before confirming it.';
+  }
+  const revision = Number(ed.data.revision);
+  if (!Number.isSafeInteger(revision) || revision < 1) errors.form = 'The editor data has no valid revision. Cancel and reopen the editor.';
+  return { errors, body: { revision, label, notes: ed.notes, fields, price_confirmed: ed.price_confirmed } };
+}
+
+function applyServerMessages(messages) {
+  const keys = ['label', 'notes', 'price_confirmed', ...EDIT_SPECS.map(spec => spec.key)];
+  for (const message of messages) {
+    const key = keys.find(name => new RegExp('(^|[^a-z_])' + name + '([^a-z_]|$)').test(message));
+    if (key) setErr(key, message);
+  }
+}
+
+async function saveEditor() {
+  const ed = editor;
+  if (!ed || ed.submitting) return;
+  clearAllErrors();
+  hideEditorAlert();
+  const { errors, body } = collectEditor();
+  const names = Object.keys(errors);
+  if (names.length) {
+    for (const name of names) setErr(name, errors[name]);
+    showEditorAlert('Fix ' + plural(names.length, 'problem', 'problems') + ' before saving', names.map(name => errors[name]));
+    return;
+  }
+  ed.submitting = true;
+  setEditorFrozen(true);
+  updateSaveButton();
+  const patch = ed.mode === 'edit' && ed.isManual;
+  let response;
+  try {
+    response = await manualRequest(patch ? 'PATCH' : 'POST', ed.id, body);
+  } catch (error) {
+    ed.submitting = false;
+    if (editor === ed) setEditorFrozen(false);
+    if (editor === ed) {
+      updateSaveButton();
+      showEditorAlert('Result unknown — nothing was resent', ['The request could not be completed (' + (error.message || 'network error') + '). It may or may not have been saved. Your draft is kept and is not resent automatically. Check the list of manual configurations before saving again to avoid a duplicate.']);
+    }
+    return;
+  }
+  const data = await readJson(response);
+  if (response.ok && data && data.item && typeof data.item === 'object' && data.item.id != null) {
+    const savedId = data.item.id;
+    const listed = await loadListings();
+    if (editor !== ed) return;
+    editor = null;
+    let notice = patch
+      ? 'Saved. The changes apply to this manual configuration only.'
+      : 'Saved as a new manual configuration. The source row is hidden while manual copies exist; the original source data is kept.';
+    if (listed === true && !rowStates.has(String(savedId))) {
+      notice += ' It is not shown in the current list because of your filters or page; your filters were not changed.';
+    }
+    loadDetail(savedId, { notice, focus: true });
+    return;
+  }
+  ed.submitting = false;
+  if (editor === ed) setEditorFrozen(false);
+  if (editor !== ed) return;
+  updateSaveButton();
+  if (response.status === 409) {
+    const reload = actionButton('Discard my draft and load the latest version', () => openEditor(ed.id, ed.mode), 'editor-reload');
+    showEditorAlert('Not saved — this configuration changed', ['It was updated since you opened it (revision conflict), for example by another edit or a data collection. Your draft is kept here and nothing was retried. Copy what you need, then load the latest version.'], [reload]);
+    return;
+  }
+  const messages = detailMessages(data);
+  if (response.status === 422) {
+    applyServerMessages(messages);
+    showEditorAlert('Not saved — the server rejected some values', messages.length ? messages : ['Check the values and try again.']);
+    return;
+  }
+  if (response.status === 403) {
+    showEditorAlert('Not saved — editing is not permitted', ['Manual editing is disabled or not allowed from this page. Your draft is kept.']);
+    return;
+  }
+  if (response.status === 404) {
+    showEditorAlert('Not saved — configuration not found', ['This configuration no longer exists. Your draft is kept; close the editor and reload the list.']);
+    return;
+  }
+  const unknown = response.status >= 500;
+  showEditorAlert(unknown ? 'Result unknown — nothing was resent' : 'Not saved', [
+    (messages.length ? messages.join(' ') : 'The server responded ' + response.status + '.') + ' Your draft is kept and is not resent automatically.' + (unknown ? ' It may have been saved; check the list of manual configurations before saving again.' : ''),
+  ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1289,12 +2335,29 @@ function init() {
     if (button) openDetail(button.dataset.id, button);
   });
   const dialog = $('detail');
-  $('close').addEventListener('click', () => dialog.close());
+  $('close').addEventListener('click', () => guardDiscard(() => dialog.close()));
   dialog.addEventListener('click', event => {
-    if (event.target === dialog) dialog.close();
+    if (event.target === dialog) guardDiscard(() => dialog.close());
+  });
+  dialog.addEventListener('cancel', event => {
+    if (editor && editor.submitting) {
+      event.preventDefault();
+      return;
+    }
+    if (editorDirty()) {
+      event.preventDefault();
+      guardDiscard(() => dialog.close());
+    }
   });
   dialog.addEventListener('close', () => {
     detailSeq += 1;
+    editor = null;
+    editorLoading = 0;
+    window.clearTimeout(fetchTimer);
+    fetchTimer = 0;
+    $('close').disabled = false;
+    view = null;
+    setDetailNotice('', false);
     restoreFocus();
   });
 
