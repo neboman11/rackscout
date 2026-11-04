@@ -38,6 +38,8 @@ Configuration rows distinguish captured option prices from starting prices. Base
 
 Captured options keep separate rows with their option labels and individual prices. An expired exact quote is labelled historical, never presented as a current verified price or a starting-price lower bound. With browser checks disabled, RackScout cannot reliably enumerate current marketplace options; it keeps one unresolved listing rather than inventing configuration/price pairs. This presentation uses already-stored evidence and adds no scraping.
 
+UI releases version the JavaScript and stylesheet URLs in `rackscout/static/index.html` alongside the package version, so existing browsers do not mix cached assets from older releases. Reload the page after an upgrade.
+
 RAM and storage distinguish **Not included** (explicit absence), **Not stated** (missing evidence) and **Conflicting claims**. Missing details never imply zero RAM or diskless storage. Coordinated exclusions such as “No HDD, RAM, NC” preserve the original evidence and establish missing RAM/storage without guessing what an unknown acronym means. Explicitly missing operating essentials remain excluded from both matches and leads.
 
 Shipping amounts are source quotes with an unconfirmed destination, not delivered prices for your postcode. Browser delivery preferences do not obtain a new quote when the source cannot provide one. Unknown shipping is not zero; unknown totals cannot satisfy a maximum-total filter as matches. Tax and import charges are excluded.
@@ -87,7 +89,7 @@ An unset dataset path leaves existing database references unchanged; a fresh dat
 `Dockerfile` uses the Playwright 1.58.0 Python image matching the pinned dependency. The runtime is non-root; production workloads use a read-only root filesystem, writable temporary storage, no Kubernetes API token and no-new-privileges. No host credentials or Docker socket are mounted.
 
 ```sh
-podman build -t localhost/rackscout:0.4.1 .
+podman build -t localhost/rackscout:0.4.2 .
 ```
 
 `compose.yaml` provides PostgreSQL, migration, web and on-demand collection. Export a strong `POSTGRES_PASSWORD` before starting it. Web binds to localhost.
