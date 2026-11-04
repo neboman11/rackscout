@@ -115,7 +115,7 @@ An unset dataset path leaves existing database references unchanged; a fresh dat
 `Dockerfile` uses the Playwright 1.64.1 Python image matching the pinned dependency. The runtime is non-root; production workloads use a read-only root filesystem, writable temporary storage, no Kubernetes API token and no-new-privileges. No host credentials or Docker socket are mounted.
 
 ```sh
-podman build -t localhost/rackscout:0.7.0 .
+podman build -t localhost/rackscout:0.7.1 .
 ```
 
 `compose.yaml` provides PostgreSQL, migration, web and on-demand collection. Export a strong `POSTGRES_PASSWORD` before starting it. Web binds to localhost.
@@ -134,6 +134,7 @@ GitHub Actions runs the PostgreSQL-backed suite before publishing an image tagge
 Automatic collection runs once daily at **04:00 UTC** (`0 4 * * *`). The **Refresh data** button queues an additional collection using the same server-detail budget, source backoff and global collector lock. Manual requests have a one-hour cooldown; repeated clicks cannot create overlapping collections. Versioned migrations preserve inventory and history.
 
 - `RACKSCOUT_MAX_DETAILS`: bounded description/page checks per run; default 25.
+- `RACKSCOUT_REQUEST_DELAY`: quiet gap between listing detail checks and minimum per-origin HTTP request spacing; default 6 seconds.
 - `RACKSCOUT_BROWSER_ENABLED`: browser verification switch; default true.
 - `RACKSCOUT_RECHECK_COOLDOWN_HOURS`: minimum interval between detail attempts; default 6.
 - `RACKSCOUT_PAGE_VERIFICATION_HOURS`: successful page-verification lifetime; default 12, not shorter than the cooldown. Allow room for the cron interval too.
@@ -147,6 +148,8 @@ Discovery pages and origins are fixed/allowlisted, not user-supplied scrape URLs
 Stored verification expires at read time, even without another collector run. Failed, blocked and browser-disabled attempts never renew successful verification. Historical quotes remain unverified leads with the last successful page check separate from the latest detail attempt. Legacy observations without a recorded expiry retain a conservative six-hour window.
 
 At the default budget, up to 12 checks go to cheap previously verified target systems, 12 to new targets and at least one to the globally oldest candidate. Unused quota is filled without exceeding the cap. Budgets below three cannot guarantee progress in every lane; bounded collection cannot keep every listing continuously verified.
+
+At six seconds, detail processing has at least a six-second quiet gap after each listing, even when its description is cached or a browser source is backing off. That caps listing throughput around ten per minute; network/processing time makes it slower. Browser subresources are not a ten-HTTP-requests-per-minute guarantee. The 25-listing budget and daily schedule are unchanged, and challenges/Retry-After still take precedence. Slower collection cannot guarantee that a provider will not restrict access.
 
 Source freshness is separate from local fetch time. Re-fetching an unchanged old snapshot does not make it fresh. Valid-source disappearance is not confirmed sold; absence-based archival requires seven days and a complete applicable vendor snapshot. Price history is retained for 90 days.
 

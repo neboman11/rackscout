@@ -126,7 +126,8 @@ class FakeFetcher:
 def settings():
     from rackscout.config import load_settings
 
-    return load_settings()
+    # Fake sources never contact providers; pacing tests supply their own controlled clock.
+    return replace(load_settings(), request_delay=0.0)
 
 
 TRAP = ("187634883092", "Dell PowerEdge R640 1U 8SFF Server Barebones 2x Gold 6150 64GB H730 2x 750w", "268.88", "0.00", "2× Gold 6150", 64)

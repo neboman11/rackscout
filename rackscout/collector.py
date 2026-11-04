@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -490,6 +491,9 @@ def run_enrichment(conn: psycopg.Connection, settings: Settings, fetcher: HttpFe
     attempted = enriched = blocked = failed = 0
     try:
         for cand in candidates:
+            # Quiet gap after each listing, including cached descriptions and browser backoffs.
+            if attempted:
+                time.sleep(settings.request_delay)
             attempted += 1
             item_id = cand["item_id"]
             messages: list[str] = []

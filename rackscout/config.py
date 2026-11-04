@@ -136,7 +136,7 @@ def load_settings() -> Settings:
         browser_enabled=_bool("RACKSCOUT_BROWSER_ENABLED", True),
         browser_timeout=_float("RACKSCOUT_BROWSER_TIMEOUT", 45.0, 5.0, 300.0),
         request_timeout=_float("RACKSCOUT_REQUEST_TIMEOUT", 30.0, 1.0, 120.0),
-        request_delay=_float("RACKSCOUT_REQUEST_DELAY", 3.0, 1.0, 120.0),
+        request_delay=_float("RACKSCOUT_REQUEST_DELAY", 6.0, 1.0, 120.0),
         recheck_cooldown_hours=recheck_cooldown_hours,
         page_verification_hours=page_verification_hours,
         max_index_bytes=_int("RACKSCOUT_MAX_INDEX_BYTES", 8 * 1024 * 1024, 4 * 1024 * 1024, 64 * 1024 * 1024),

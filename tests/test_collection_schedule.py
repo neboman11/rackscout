@@ -5,6 +5,8 @@ window closes, even when many never-checked non-target or new listings are
 queued, while new targets and the oldest other candidates keep bounded progress.
 Database tests share the isolated UUID-schema fixture from ``test_db``.
 """
+from dataclasses import replace
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -301,3 +303,58 @@ def test_cheapest_due_target_rechecks_before_stale_costly_target(conn):
 
     assert _selected(conn, 1) == [cheap]
     assert costly in _selected(conn, 3)  # reserved oldest lane still makes progress
+
+
+@requires_db
+@pytest.mark.parametrize("browser_enabled,cached,work_seconds", [
+    (True, True, 0.0),
+    (False, False, 0.0),
+    (True, True, 9.0),
+])
+def test_detail_checks_respect_interval_even_with_cached_descriptions(
+    conn, monkeypatch, browser_enabled, cached, work_seconds,
+):
+    from rackscout import browser, collector
+
+    _discover(conn, [(_item_id(1), "R640", "400.00"), (_item_id(2), "R640", "400.00")])
+    if cached:
+        conn.execute(
+            "UPDATE listings SET description_status='verified', "
+            "description_checked_at=now(), description_claims='{}'::jsonb"
+        )
+    clock = [0.0]
+    starts = []
+
+    def sleep(seconds):
+        clock[0] += seconds
+
+    def work():
+        starts.append(clock[0])
+        clock[0] += work_seconds
+
+    class Fetcher:
+        def fetch_description(self, item_id, max_bytes):
+            assert not cached, "Fresh descriptions must not be fetched again"
+            work()
+            return {"ram_gb": 32, "exclusions": []}
+
+    class Checker:
+        started = True
+
+        def __init__(self, *args):
+            pass
+
+        def check(self, item_id):
+            work()
+            return {"status": "verified", "has_variations": False, "price_kind": "exact",
+                    "item_price": "400.00", "variations": []}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(collector, "time", SimpleNamespace(sleep=sleep))
+    monkeypatch.setattr(browser, "BrowserChecker", Checker)
+    collector.run_enrichment(
+        conn, replace(settings(), request_delay=6.0), Fetcher(), 2, browser_enabled,
+    )
+    assert starts == [0.0, work_seconds + 6.0]
