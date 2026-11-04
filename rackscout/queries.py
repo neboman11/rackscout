@@ -7,6 +7,7 @@ rows without a known contradiction may appear only as separately grouped
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -52,6 +53,8 @@ l.item_id, l.title, l.seller, l.condition, l.canonical_url, l.last_seen_source_a
 l.last_checked_at, l.detail_status, l.page_status, l.page_checked_at, l.vendor,
 CASE WHEN l.page_claims->>'status' = 'verified' THEN (l.page_claims->>'checked_at')::timestamptz END AS page_verified_at,
 coalesce({PAGE_APPLIES_SQL}, false) AS page_applies, {PAGE_CURRENT_SQL} AS page_current,
+coalesce((l.page_claims->>'status' = 'verified') AND (l.page_claims->>'has_variations') = 'true', false) AS page_has_variations,
+CASE WHEN l.description_claims->>'status' = 'verified' THEN l.description_claims->>'text_excerpt' END AS description_text,
 m.generation, m.generation_label, m.target_era, m.rack_units, m.socket_capacity,
 b.cpu_mark, b.single_thread, b.samples, b.version AS bench_version, b.scope AS bench_scope,
 b.source_url AS bench_url, b.retrieved_at AS bench_retrieved_at
@@ -237,6 +240,54 @@ def _warnings(r: dict[str, Any]) -> list[str]:
     return warnings
 
 
+# Explicit orderable hardware choices only. Generic payment/shipping/upgrade/marketing
+# wording must never match: every alternative names a hardware dimension.
+_CHOICE_RE = re.compile(
+    r"\b(?:select|choose|pick)\s*(?:your\s+|the\s+|from\s+)?(?:ram|memory|cpus?|processors?|configuration|config|hdd|ssd|drives?|storage)\b"
+    r"|\b(?:ram|memory|cpu|processor|configuration)s?\s+(?:options|choices)\b",
+    re.IGNORECASE,
+)
+
+
+# A sentence that negates the choice or only invites the buyer to ask/request one is not
+# an orderable option; missing unusual wording is preferred over a false affirmation.
+_VETO_RE = re.compile(
+    r"\b(?:no|without)\s+(?:(?:other|additional|extra|alternative|different|further|any|more|available)\s+)*"
+    r"(?:(?:(?:ram|memory|cpus?|processors?|configuration|config|hdd|ssd|drives?|storage)\s+)?"
+    r"(?:options?|choices?|alternatives?)|select|choose|pick)\b|"
+    r"\b(?:not|none|unavailable|cannot|contact|ask|message|email|inquire|enquire|request|"
+    r"quote|upgrades?|custom)\b|\b[a-z]+n['’]t\b",
+    re.IGNORECASE,
+)
+_SENTENCE_RE = re.compile(r"[.!?|\n;]+")
+
+
+def _choice_evidence(source: str, text: str | None) -> list[str]:
+    for sentence in _SENTENCE_RE.split(text or ""):
+        m = _CHOICE_RE.search(sentence)
+        if m and not _VETO_RE.search(sentence):
+            return [f"{source} offers hardware choice: \"{sentence.strip()[:100]}\""]
+    return []
+
+
+def _offer(r: dict[str, Any]) -> dict[str, Any]:
+    """Classify how far the shown price and specification are known to belong together."""
+    price_kind = r["price_kind"]
+    if price_kind == "exact":
+        current = bool(r["page_current"])
+        return {"kind": "configuration" if current else "historical_configuration",
+                "price_is_starting": False, "specification_price_paired": current, "evidence": []}
+    evidence: list[str] = []
+    if r["page_has_variations"] and r["page_current"]:
+        evidence.append("eBay page lists selectable variations")
+    evidence += _choice_evidence("Title", r["title"])
+    evidence += _choice_evidence("Description", r["description_text"])
+    return {"kind": "multiple_options" if evidence else "unverified",
+            "price_is_starting": price_kind in ("base", "range") and r["item_price"] is not None,
+            "specification_price_paired": False, "evidence": evidence}
+
+
+
 def serialize(r: dict[str, Any], match_state: str) -> dict[str, Any]:
     benchmark = None
     if r.get("cpu_mark") is not None:
@@ -295,6 +346,7 @@ def serialize(r: dict[str, Any], match_state: str) -> dict[str, Any]:
         "warnings": _warnings(r),
         "exclusions": r["exclusions"] or [],
         "benchmark": benchmark,
+        "offer": _offer(r),
     }
 
 

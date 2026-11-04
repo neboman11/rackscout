@@ -44,6 +44,7 @@ All listed fields always present unless noted. Unknown values null, NOT zero. Mo
  id: number,
  item_id: string,
  variant_id: string|null,
+ variant_label: string|null,
  title: string,
  vendor: "Dell"|"HPE"|"Supermicro"|"Lenovo"|"Cisco"|null,   // null = unknown OEM
  model: string|null,              // Dell keeps bare PowerEdge keys (R640); others vendor-qualified ("HPE DL360 Gen10", "Supermicro SYS-1029U-TR4", "Lenovo SR630", "Cisco UCS C220 M5"); null when no system model is identifiable
@@ -65,6 +66,7 @@ All listed fields always present unless noted. Unknown values null, NOT zero. Mo
  hardware_state: "confirmed"|"review"|"missing"|"damaged",
  damage: boolean|null,
  price_kind: "exact"|"base"|"range"|"unknown",
+ offer: {kind:"configuration"|"historical_configuration"|"multiple_options"|"unverified", price_is_starting:boolean, specification_price_paired:boolean, evidence:[string]},
  item_price: string|null,
  shipping_price: string|null,
  quoted_total: string|null,
@@ -87,6 +89,8 @@ All listed fields always present unless noted. Unknown values null, NOT zero. Mo
 ```
 
 Details and list may share same fields. Frontend uses textContent/created elements, not raw source HTML. Dynamic URLs validated against https exact eBay item/cpubenchmark hosts before links. Missing score displays Not available. Render `1 of 2 — Single populated`, `2 of 2 — Dual populated`, `1 of 1 — Single populated`; unknown never becomes single. Benchmark average per CPU; NEVER multiply by count. Benchmark sorted perCPU, not estimated serverperf. Detail evidence must explain base/variant uncertainty and excluded accessories; index evidence cites the vendor index page the observation came from. Cited chassis metadata (`rackscout/data/models.json`: vendor, generation, generation_label, target_era, rack_units, socket_capacity, manufacturer source_url/source_text) is seeded by `migrate`; benchmark data only from `RACKSCOUT_BENCHMARKS_FILE`; inventory never seeded. Catalog entries are exact manufacturer SKUs/platforms only, never prefix-inferred; chassis-only or motherboard-only listings (e.g. Supermicro CSE-119U with X11DPU) establish no model, height or socket capacity.
+
+`offer` is computed from existing stored observations for both list and detail responses. `configuration` requires an exact quote and current applicable page verification; `historical_configuration` is an exact quote without current verification. Non-exact rows with positive evidence of configuration/hardware choices are `multiple_options`; remaining rows are `unverified`. Generic payment, shipping or upgrade marketing does not establish choices. `price_is_starting` applies only to numeric base/range quotes, never historical exact quotes or unknown prices. `specification_price_paired` is true only for a currently verified exact configuration. Original specification values/confidence remain intact. UI prominently shows starting prices with `+`, qualifies unpaired advertised RAM as `Listed`, exposes captured `variant_label`, preserves unknown shipping, and labels historical exact quotes. Neither the API nor UI claims complete enumeration of marketplace options.
 
 Migration `002_multi_oem` is non-destructive: existing listings, configurations, price history and source runs are kept; pre-existing inventory is backfilled as vendor Dell from the Dell page and the Dell page freshness is backfilled from earlier discovery runs.
 

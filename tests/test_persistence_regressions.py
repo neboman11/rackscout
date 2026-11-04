@@ -331,3 +331,208 @@ def test_partial_snapshot_updates_present_rows_but_never_archives_absence(conn):
 
 def replace_price(item, price):
     return (item[0], item[1], price, *item[3:])
+
+
+# ---------------------------------------------------------------------------
+# Offer contract: price/configuration pairing is derived at read time
+# ---------------------------------------------------------------------------
+
+def _offer(conn, item_id, variant_id=None):
+    found = [i for i in _items(conn, item_id, hide_damaged=False, **PERMISSIVE) if i["variant_id"] == variant_id]
+    assert len(found) == 1
+    return found[0]
+
+
+def _titled(item, title):
+    return (item[0], title, *item[2:])
+
+
+def _options_page(now, **over):
+    """Verified page that has variations the parser could not read: only a base/range quote exists."""
+    return {**verified_page(now, variations=[]), **over}
+
+
+@requires_db
+def test_index_only_quote_is_never_paired_with_advertised_ram(conn):
+    _discover(conn, [TRAP])  # title advertises 64GB, price is the cheapest/base quote
+    item = _offer(conn, TRAP[0])
+    assert item["offer"]["kind"] == "unverified"
+    assert item["offer"]["specification_price_paired"] is False
+    assert item["offer"]["price_is_starting"] is True
+    assert item["offer"]["evidence"] == []
+    # raw server facts and provenance are not rewritten
+    assert item["ram_gb"] == 64
+    assert item["price_kind"] == "base" and item["item_price"] == "268.88"
+
+
+@requires_db
+def test_current_exact_variants_are_paired_and_keep_their_own_price(conn):
+    _discover(conn, [TRAP])
+    now = datetime.now(timezone.utc)
+    variations = [{"variant_id": "2", "labels": {"Memory": "32GB"}, "price": "429.88"},
+                  {"variant_id": "3", "labels": {"Memory": "64GB"}, "price": "519.88"}]
+    _set_page(conn, TRAP[0], verified_page(now, variations=variations), checked_at=now)
+    recompute_listing(conn, TRAP[0])
+    for variant_id, price in (("2", "429.88"), ("3", "519.88")):
+        item = _offer(conn, TRAP[0], variant_id)
+        assert item["offer"]["kind"] == "configuration"
+        assert item["offer"]["specification_price_paired"] is True
+        assert item["offer"]["price_is_starting"] is False
+        assert item["item_price"] == price and item["variant_label"]
+
+
+@requires_db
+def test_stale_exact_variant_is_historical_not_a_starting_price(conn):
+    _discover(conn, [TRAP])
+    old = datetime.now(timezone.utc) - timedelta(hours=7)
+    _set_page(conn, TRAP[0], verified_page(old), checked_at=old)
+    recompute_listing(conn, TRAP[0])
+    item = _offer(conn, TRAP[0], "2")
+    assert item["offer"]["kind"] == "historical_configuration"
+    assert item["offer"]["specification_price_paired"] is False
+    assert item["offer"]["price_is_starting"] is False
+    assert item["item_price"] == "429.88" and item["variant_label"]
+
+
+@requires_db
+def test_current_exact_single_page_quote_is_configuration(conn):
+    _discover(conn, [TRAP])
+    now = datetime.now(timezone.utc)
+    _set_page(conn, TRAP[0], {**verified_page(now, variations=[]), "has_variations": False, "price": "268.88"},
+              checked_at=now)
+    recompute_listing(conn, TRAP[0])
+    item = _offer(conn, TRAP[0])
+    assert item["price_kind"] == "exact"
+    assert item["offer"]["kind"] == "configuration"
+    assert item["offer"]["specification_price_paired"] is True
+    assert item["offer"]["price_is_starting"] is False
+
+
+@requires_db
+def test_page_with_unreadable_variations_is_multiple_options_with_starting_price(conn):
+    _discover(conn, [TRAP])
+    now = datetime.now(timezone.utc)
+    _set_page(conn, TRAP[0], _options_page(now), checked_at=now)
+    recompute_listing(conn, TRAP[0])
+    item = _offer(conn, TRAP[0])
+    assert item["price_kind"] in ("base", "range")
+    assert item["offer"]["kind"] == "multiple_options"
+    assert item["offer"]["price_is_starting"] is True
+    assert item["offer"]["specification_price_paired"] is False
+    assert item["offer"]["evidence"] and all(isinstance(e, str) and len(e) <= 200 for e in item["offer"]["evidence"])
+
+
+@requires_db
+@pytest.mark.parametrize("title", [
+    "Dell R640 8SFF 2x Gold 6138 selectRAM",
+    "Dell R640 8SFF 2x Gold 6138 choosememory 32GB 64GB",
+    "Dell R640 8SFF 2x Gold 6138 Select Configuration",
+    "Dell R640 8SFF 2x Gold 6138 No HDD selectRAM",
+    "Dell R640 8SFF 2x Gold 6138 Without storage choose memory",
+], ids=["selectRAM", "choosememory", "configuration", "diskless-with-memory-choice", "without-storage-with-memory-choice"])
+def test_title_hardware_choice_marks_multiple_options(conn, title):
+    _discover(conn, [_titled(UNKNOWN_SHIP, title)])
+    item = _offer(conn, UNKNOWN_SHIP[0])
+    assert item["offer"]["kind"] == "multiple_options"
+    assert item["offer"]["specification_price_paired"] is False
+    assert item["offer"]["price_is_starting"] is True
+    assert item["offer"]["evidence"]
+
+
+@requires_db
+def test_description_hardware_choice_marks_multiple_options_without_leaking_text(conn):
+    _discover(conn, [UNKNOWN_SHIP])
+    text = "Please select RAM from the drop down menu. Ships fast."
+    _set_description(conn, UNKNOWN_SHIP[0], {"text_excerpt": text})
+    item = _offer(conn, UNKNOWN_SHIP[0])
+    assert item["offer"]["kind"] == "multiple_options"
+    assert all(len(e) <= 200 for e in item["offer"]["evidence"])
+    assert text not in repr(item) and "text_excerpt" not in item and "source_record" not in item
+
+
+@requires_db
+@pytest.mark.parametrize("title,text", [
+    ("Dell R640 8SFF 2x Gold 6138 16GB No HDD", "We accept many payment options. Multiple shipping options available."),
+    ("Dell R640 8SFF 2x Gold 6138 16GB No HDD", "Upgrades available, message us. Ask about a RAM upgrade or custom quote."),
+    ("Dell R640 8SFF 2x Gold 6138 16GB No HDD - Best Offer / Free Shipping Options", "Great deals, choose your payment method at checkout."),
+], ids=["payment-shipping", "upgrade-marketing", "title-boilerplate"])
+def test_generic_seller_boilerplate_is_not_multiple_options(conn, title, text):
+    _discover(conn, [_titled(UNKNOWN_SHIP, title)])
+    _set_description(conn, UNKNOWN_SHIP[0], {"text_excerpt": text})
+    item = _offer(conn, UNKNOWN_SHIP[0])
+    assert item["offer"]["kind"] == "unverified"
+    assert item["offer"]["evidence"] == []
+
+
+@requires_db
+def test_exact_rows_ignore_option_text_and_list_matches_detail(conn):
+    from rackscout import queries
+
+    match = _fresh_trap_match(conn)
+    _set_description(conn, TRAP[0], {"text_excerpt": "Select RAM from the drop down"})
+    item = _offer(conn, TRAP[0], "2")
+    assert item["offer"]["kind"] == "configuration"
+    detail = queries.get_listing(conn, match["id"])
+    assert detail["offer"] == item["offer"]
+
+
+def _stored_page_options(conn, *, hours_ago=0.0, status="verified", fresh_hours=6):
+    _discover(conn, [TRAP])
+    checked = datetime.now(timezone.utc) - timedelta(hours=hours_ago)
+    _set_page(conn, TRAP[0], _options_page(checked, fresh_until=(checked + timedelta(hours=fresh_hours)).isoformat()),
+              status=status, checked_at=checked)
+    recompute_listing(conn, TRAP[0])
+
+
+@requires_db
+def test_current_page_variations_remain_multiple_options_baseline(conn):
+    _stored_page_options(conn)
+    assert _offer(conn, TRAP[0])["offer"]["kind"] == "multiple_options"
+
+
+@requires_db
+@pytest.mark.parametrize("how", ["changed-index-price", "expired-window", "latest-check-failed"])
+def test_superseded_expired_or_failed_page_does_not_prove_options(conn, how):
+    if how == "expired-window":
+        _stored_page_options(conn, hours_ago=7)
+    elif how == "latest-check-failed":
+        _stored_page_options(conn, status="failed")
+    else:
+        _stored_page_options(conn)
+        conn.execute("UPDATE listings SET source_record = jsonb_set(source_record, '{item_price}', '\"300.00\"') WHERE item_id = %s",
+                     (TRAP[0],))
+    item = _offer(conn, TRAP[0])
+    assert item["offer"]["kind"] == "unverified"
+    assert item["offer"]["evidence"] == []
+    assert item["offer"]["specification_price_paired"] is False
+
+
+@requires_db
+def test_independent_title_evidence_survives_stale_page(conn):
+    _discover(conn, [_titled(TRAP, TRAP[1] + " selectRAM")])
+    title_only = _offer(conn, TRAP[0])["offer"]
+    assert title_only["kind"] == "multiple_options"
+    old = datetime.now(timezone.utc) - timedelta(hours=7)
+    _set_page(conn, TRAP[0], _options_page(old), checked_at=old)
+    recompute_listing(conn, TRAP[0])
+    assert _offer(conn, TRAP[0])["offer"] == title_only
+
+
+@requires_db
+@pytest.mark.parametrize("text", [
+    "No memory options are available for this server.",
+    "Contact us for RAM options or upgrades and a custom quote.",
+    "RAM options are not available. Memory choices unavailable.",
+    "Message us to ask about CPU options.",
+    "RAM options aren't available for this server.",
+    "Memory choices aren’t available for this server.",
+    "Don't select RAM; no alternatives are offered.",
+    "No other RAM options are available for this server.",
+    "No additional memory choices are offered.",
+], ids=["negated", "contact-for-quote", "unavailable", "ask-only", "straight-contraction", "curly-contraction", "negative-instruction", "no-other-options", "no-additional-choices"])
+def test_negated_or_request_only_hardware_marketing_is_not_multiple_options(conn, text):
+    _discover(conn, [UNKNOWN_SHIP])
+    _set_description(conn, UNKNOWN_SHIP[0], {"text_excerpt": text})
+    item = _offer(conn, UNKNOWN_SHIP[0])
+    assert item["offer"]["kind"] == "unverified"
+    assert item["offer"]["evidence"] == []

@@ -76,7 +76,7 @@ h1{font-size:28px;line-height:1.15;letter-spacing:-.9px;margin:0 0 8px}
 .loading{padding:10px 0;color:var(--muted);font-size:12px}
 #results.stale{opacity:.55}
 
-.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:6px;background:#fff;max-width:100%}
+.table-wrap{position:relative;overflow:auto;border:1px solid var(--line);border-radius:6px;background:#fff;max-width:100%}
 table{border-collapse:collapse;width:100%;min-width:1020px;text-align:left}
 th{background:#eef1ed;font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);padding:12px 11px;white-space:nowrap}
 td{padding:17px 11px;border-top:1px solid #e4e8e4;vertical-align:middle;font-size:12px}
@@ -181,3 +181,12 @@ dd{margin:0;overflow-wrap:anywhere}
 }
 @media(min-width:1450px){td{padding-top:20px;padding-bottom:20px}}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
+
+/* Offer semantics: starting prices, historical quotes, unpaired spec claims */
+.money small{white-space:normal;max-width:220px;margin-left:auto}
+.offer-flag{display:block;font-weight:700;color:var(--amber)}
+.money .offer-flag{font:700 11px system-ui,sans-serif;margin-top:5px}
+.offer-multiple_options{color:var(--teal)}
+.variant-label{font-weight:600;color:var(--ink);white-space:normal;max-width:260px}
+.offer-callout p{margin:6px 0 0}
+.offer-callout .offer-flag{font-size:13px}

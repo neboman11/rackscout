@@ -479,21 +479,21 @@ function buildGroup(title, total, description, items, isLeads) {
 }
 
 function buildRow(item) {
-  const total = formatMoney(item.quoted_total);
+  const total = priceText(item, item.quoted_total);
   const nameButton = el('button', {
     className: 'name',
     text: modelTitle(item),
     attrs: {
       type: 'button',
       'data-id': String(item.id),
-      'aria-label': 'View ' + modelTitle(item) + ', RAM ' + ramLabel(item) + ', ' + storageLabel(item) + ', ' + (total || 'total unknown'),
+      'aria-label': 'View ' + modelTitle(item) + ', RAM ' + ramDisplay(item) + ', ' + storageLabel(item) + ', ' + priceAria(item),
     },
   });
   const seller = [item.seller || 'Unknown seller', item.rack_units == null ? 'height unknown' : item.rack_units + 'U', item.condition || 'condition unknown'].join(' · ');
 
   const cpuCell = el('td', null, [
     document.createTextNode(item.cpu_model ? (item.cpu_count == null ? '?' : item.cpu_count) + '× ' + item.cpu_model : 'CPU unknown'),
-    small(item.total_cores == null ? 'cores unknown' : formatInt(item.total_cores) + ' cores total'),
+    small((item.total_cores == null ? 'cores unknown' : formatInt(item.total_cores) + ' cores total') + claimTag(item)),
   ]);
 
   const socketCell = el('td', null, [
@@ -501,18 +501,20 @@ function buildRow(item) {
     small(populatedLabel(item.cpu_count)),
   ]);
 
+  const ramNote = ramPairingNote(item);
   const ramCell = el('td', { className: 'mono' }, [
-    document.createTextNode(ramLabel(item)),
+    document.createTextNode(ramDisplay(item)),
+    ramNote ? small(ramNote) : null,
   ]);
 
   const baysText = item.drive_bays == null ? 'Unknown' : item.drive_bays + ' × ' + driveSizeLabel(item.drive_size, false);
   const baysCell = el('td', null, [
     el('span', { className: item.drive_bays != null && item.drive_bays >= 8 ? 'preferred' : '', text: baysText }),
-    small(storageLabel(item)),
+    small(storageLabel(item) + claimTag(item)),
   ]);
 
   const row = el('tr', null, [
-    el('td', null, [nameButton, small(seller)]),
+    el('td', null, [nameButton, item.variant_label ? el('small', { className: 'variant-label', text: (offerOf(item).kind === 'historical_configuration' ? 'Historical option: ' : 'Option: ') + item.variant_label }) : null, small(seller)]),
     cpuCell,
     socketCell,
     benchmarkCell(item),
@@ -529,6 +531,72 @@ function ramLabel(item) {
   if (item.ram_gb != null && item.ram_gb > 0) return item.ram_gb + ' GB';
   if (item.ram_gb === 0 && (item.ram_state === 'confirmed' || item.ram_state === 'inferred')) return 'Not included';
   return 'Not stated';
+}
+
+// Offer semantics (item.offer): see API contract. Missing offer is treated as unverified.
+function offerOf(item) {
+  const offer = item.offer || {};
+  return {
+    kind: offer.kind || (item.price_kind === 'exact' && !item.page_verification_current ? 'historical_configuration' : 'unverified'),
+    starting: offer.price_is_starting === true || (!item.offer && ['base', 'range'].includes(item.price_kind) && formatMoney(item.item_price) != null),
+    paired: offer.specification_price_paired === true,
+    evidence: Array.isArray(offer.evidence) ? offer.evidence : [],
+  };
+}
+
+function priceText(item, value) {
+  const money = formatMoney(value);
+  if (money == null) return null;
+  return offerOf(item).starting ? money + '+' : money;
+}
+
+function offerHeadline(item) {
+  switch (offerOf(item).kind) {
+    case 'historical_configuration': return 'Historical quote — not current';
+    case 'multiple_options': return 'Multiple options available';
+    case 'unverified': return 'Configuration options unverified';
+    default: return '';
+  }
+}
+
+function offerExplanation(item) {
+  const offer = offerOf(item);
+  const price = offer.starting ? 'The price shown is a starting price' : 'The price shown';
+  switch (offer.kind) {
+    case 'configuration': return 'Price checked against the current listing page for this option. Hardware confidence remains field-specific; an exact price does not confirm every component is included.';
+    case 'historical_configuration': return 'This exact option was captured earlier and the page has not been reverified. Treat the price and selected option as historical, not a current quote.';
+    case 'multiple_options': return 'The listing shows evidence of more than one hardware option. ' + price + '; which option it applies to is not verified, and this view does not list every option.';
+    default: return 'The selected option is not verified. ' + price + ' and may not match the specifications listed below. This does not mean the listing offers multiple options.';
+  }
+}
+
+// Aria text for a price: states starting / historical meaning, not only the number.
+function priceAria(item) {
+  const offer = offerOf(item);
+  const total = formatMoney(item.quoted_total);
+  const itemPrice = formatMoney(item.item_price);
+  if (offer.kind === 'historical_configuration') return total ? 'historical quote ' + total + ', not current' : 'historical quote, total unknown';
+  if (offer.starting) {
+    if (total) return 'starting price ' + total + ' or more, configuration not verified';
+    return 'total unknown' + (itemPrice ? ', item price starting at ' + itemPrice + ', ' + shippingText(item) : '');
+  }
+  return total || 'total unknown';
+}
+
+function ramDisplay(item) {
+  const label = ramLabel(item);
+  if (!offerOf(item).paired && item.ram_gb != null && item.ram_gb > 0 && item.ram_state !== 'conflicting') return 'Listed: ' + label;
+  return label;
+}
+
+function ramPairingNote(item) {
+  const offer = offerOf(item);
+  if (offer.paired || ramLabel(item) === 'Not stated') return '';
+  return offer.starting ? 'Not tied to starting price' : 'Listing claim, not price-verified';
+}
+
+function claimTag(item) {
+  return offerOf(item).paired ? '' : ' · listing claim';
 }
 
 function storageStatus(item) {
@@ -579,10 +647,11 @@ function hardwareCell(item) {
 }
 
 function priceKindNote(item) {
-  if (item.price_kind === 'base') return 'Base price, selected variant unverified';
-  if (item.price_kind === 'range') return 'Price range, variant unverified';
+  const offer = offerOf(item);
+  if (offer.kind === 'historical_configuration') return 'Historical quote for the selected option; not reverified';
+  if (item.price_kind === 'base') return 'Starting price; selected configuration unverified';
+  if (item.price_kind === 'range') return 'Lowest price of a range; selected configuration unverified';
   if (item.price_kind === 'unknown') return 'Price unknown';
-  if (item.price_kind === 'exact' && item.page_verified_at && !item.page_verification_current) return 'Historical selected-variant quote; not reverified';
   return '';
 }
 
@@ -592,16 +661,23 @@ function shippingText(item) {
   return shipping === '$0.00' ? 'free shipping' : shipping + ' ship';
 }
 
+function itemPriceLine(item) {
+  const itemPrice = priceText(item, item.item_price);
+  if (!itemPrice) return '';
+  return itemPrice + (offerOf(item).starting ? ' item · ' : ' + ') + shippingText(item);
+}
+
 function priceCell(item) {
-  const total = formatMoney(item.quoted_total);
-  const itemPrice = formatMoney(item.item_price);
+  const total = priceText(item, item.quoted_total);
   const cell = el('td', { className: 'money' });
-  cell.append(document.createTextNode(total || 'Total unknown'));
-  const parts = [];
-  if (itemPrice) parts.push(itemPrice + ' + ' + shippingText(item));
-  const kind = priceKindNote(item);
-  if (kind) parts.push(kind);
-  cell.append(small(parts.join(' · ') || 'No price data'));
+  cell.append(
+    el('span', { className: 'sr-only', text: priceAria(item) }),
+    el('span', { text: total || 'Total unknown', attrs: { 'aria-hidden': 'true' } }),
+  );
+  const line = itemPriceLine(item);
+  cell.append(small(line || 'No price data'));
+  const headline = offerHeadline(item);
+  if (headline) cell.append(el('small', { className: 'offer-flag offer-' + offerOf(item).kind, text: headline }));
   return cell;
 }
 
@@ -978,8 +1054,8 @@ function dlRow(list, term, value) {
 function renderDetail(item) {
   $('detail-title').textContent = modelTitle(item);
   const badge = hardwareBadge(item);
-  const total = formatMoney(item.quoted_total);
-  const itemPrice = formatMoney(item.item_price);
+  const total = priceText(item, item.quoted_total);
+  const itemPrice = priceText(item, item.item_price);
   const shipping = formatMoney(item.shipping_price);
   const nodes = [];
 
@@ -997,6 +1073,7 @@ function renderDetail(item) {
   if (kind) priceNotes.push(kind);
   nodes.push(el('p', { className: 'subtle', text: priceNotes.join(' · ') }));
   if (item.shipping_context) nodes.push(el('p', { className: 'subtle', text: item.shipping_context + ' Destination of this quote is unconfirmed.' }));
+  nodes.push(offerSection(item));
 
   if (item.title) nodes.push(el('p', { className: 'subtle', text: 'Listing title: ' + item.title }));
   appendCallout(nodes, 'Warnings', item.warnings);
@@ -1005,7 +1082,8 @@ function renderDetail(item) {
   const list = el('dl');
   dlRow(list, 'Processors', item.cpu_model ? (item.cpu_count == null ? '?' : item.cpu_count) + '× ' + item.cpu_model + ' · ' + (item.total_cores == null ? 'cores unknown' : item.total_cores + ' installed cores') : 'Unknown');
   dlRow(list, 'Socket population', socketLabel(item) + ' — ' + populatedLabel(item.cpu_count));
-  dlRow(list, 'Memory', ramLabel(item));
+  if (item.variant_label) dlRow(list, offerOf(item).kind === 'historical_configuration' ? 'Historical option' : 'Option', item.variant_label);
+  dlRow(list, 'Memory', ramDisplay(item) + (ramPairingNote(item) ? ' — ' + ramPairingNote(item) : ''));
   dlRow(list, 'Drive bays', item.drive_bays == null ? 'Unknown' : item.drive_bays + ' × ' + driveSizeLabel(item.drive_size, true));
   dlRow(list, 'Storage', storageStatus(item));
   dlRow(list, 'Rack height', item.rack_units == null ? 'Unknown' : item.rack_units + 'U');
@@ -1038,6 +1116,20 @@ function renderDetail(item) {
 function detailStatusLabel(status) {
   const labels = { never: 'Not yet checked', verified: 'Seller details verified', partial: 'Partly checked', blocked: 'Blocked by source', failed: 'Check failed' };
   return labels[status] || 'Unknown';
+}
+
+function offerSection(item) {
+  const offer = offerOf(item);
+  const headline = offerHeadline(item) || 'Current exact price quote';
+  const children = [el('strong', { className: 'offer-flag offer-' + offer.kind, text: headline }), el('p', { text: offerExplanation(item) })];
+  if (!offer.paired) {
+    children.push(el('p', { text: 'Processors, memory and storage below are listing claims, shown as stated. They are not verified as included at this price, and other options may exist.' }));
+  }
+  if (offer.evidence.length) {
+    children.push(el('p', { className: 'subtle', text: 'Evidence of options:' }));
+    children.push(el('ul', null, offer.evidence.map(text => el('li', { text: String(text) }))));
+  }
+  return el('div', { className: 'callout offer-callout' }, children);
 }
 
 function appendCallout(nodes, heading, messages) {
