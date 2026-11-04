@@ -63,6 +63,8 @@ All listed fields always present unless noted. Unknown values null, NOT zero. Mo
  cpu_count: number|null,
  socket_capacity: number|null,
  total_cores: number|null,
+ cpu_spec: {cpu_model:string,cores_per_cpu:number,provider:string,source_url:string,retrieved_at:string}|null,
+ inferred_total_cores: number|null, // model reference × known populated CPUs; never overwrites total_cores
  ram_gb: number|null,
  drive_bays: number|null,
  drive_size: "SFF"|"LFF"|null,
@@ -160,3 +162,20 @@ Migration 005 adds nullable `refresh_control.target_listing_id` (FK RESTRICT); n
 5. Update existing docs, publish immutable image and chart version, deploy to apartment and verify actual surface/rollout.
 
 Browser investigation: actual offline probes observed user-namespace creation denied (EPERM) under RuntimeDefault with the intended non-root/no-new-privileges policy, including a pod-user-namespace probe; no RuntimeClass is available. Seccomp attribution is an inference without direct profile/audit inspection. Keep browser verification disabled; no unsandboxed, privileged, unconfined, SYS_ADMIN or host-policy-weakening workaround.
+
+## CPU core reference lookup
+
+Use a bundled, pinned snapshot of validated CPU/core facts from the MIT-licensed Compute Specs DB, retaining its license notice. Include no benchmark scores. Supplement Bronze 3104 with its official Intel specification (6 physical cores) because it is present in apartment inventory but absent from the candidate CSV. Record provider, source URL and retrieval date. No lookup network requests, new dependencies, database migration or scrape schedule changes.
+
+Data file `rackscout/data/cpu_specs.json`: `{provider,source_url,retrieved_at,cpus:[{cpu_model,cores_per_cpu,provider?,source_url?,retrieved_at?}]}`. Top-level provenance is inherited unless overridden by an entry. Use only validated positive integer core counts. Pin the upstream CSV source URL to its exact Git commit, not main.
+
+New module `rackscout.cpu_specs` exports `lookup(cpu_model: str|None, cpu_count: int|None=None) -> {match,total_cores}`. `match` is null or `{cpu_model,cores_per_cpu,provider,source_url,retrieved_at}`. Cache the packaged catalog. Match exact canonical CPU SKUs with benign brand/trademark/clock normalization; preserve version and suffix distinctions. Ambiguous alternatives, unrecognized suffixes and contradictory manufacturers do not match. Reuse the existing basic CPU key normalizer without changing benchmark keys or inventory.
+
+GET `/api/cpu-specs?cpu_model=...&cpu_count=...` returns that lookup result without database or external network access. Model text is at most 100 characters; optional populated count is an integer 1..8. Missing count means unknown total, never chassis capacity. Unknown CPU returns `{match:null,total_cores:null}`.
+
+Listing serialization adds `cpu_spec` (match object/null) and `inferred_total_cores` (integer/null). Preserve existing `total_cores` exactly: it remains seller/user-entered data. Infer a reference total only for known CPU model and populated count with confirmed/inferred confidence and no explicit missing CPU; conflicting models/counts cannot produce inferred totals. No materialization or edits to source/manual rows.
+Legacy NULL structured essentials plus an existing missing-hardware blocker withhold inferred totals conservatively. CPU text containing population prefixes is not treated as a plain SKU; quantity belongs in the separate populated count. Bare suffix tokens are retained, not mistaken for trademark notation.
+
+UI prefers entered/reported totals; otherwise clearly labels reference-derived totals or per-CPU cores when population is unknown. Detail view includes provenance and flags mismatches without replacing reported data. Editor has **Look up cores** and an explicit **Use N total cores** action. Lookup alone never changes a manual value, price confirmation, or draft. Applying a result uses normal manual-field tracking and hardware price-invalidation rules. Changing CPU model/count/inclusion invalidates pending/results; stale responses cannot modify a different editor or newer input. Unknown/missing populations cannot fill a total.
+
+Build order: parent observed 18 API behavior regressions fail before implementation; source snapshot and backend lookup can proceed independently, while parent implements UI. Parent runs integrated suite, live local editor/row smoke (including unknown/version/dual count/manual precedence/stale response), code/security review, then publishes 0.6.0 immutable image and deploys through existing apartment GitOps. Keep marketplace browser verification disabled.

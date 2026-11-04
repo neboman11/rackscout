@@ -185,6 +185,40 @@ function safeBenchmarkUrl(value) {
   return safeUrl(value, ['www.cpubenchmark.net', 'cpubenchmark.net'], /^\/cpu\.php$/);
 }
 
+function cpuSpecSource(spec) {
+  const href = safeUrl(spec.source_url, ['github.com', 'www.intel.com', 'intel.com', 'www.amd.com', 'amd.com']);
+  const text = spec.provider || 'CPU specification source';
+  return href ? externalLink(href, text) : el('span', { text });
+}
+
+function coreSummary(item) {
+  if (item.total_cores != null) return formatInt(item.total_cores) + ' cores total';
+  if (item.inferred_total_cores != null) return formatInt(item.inferred_total_cores) + ' cores total (CPU lookup)';
+  if (item.cpu_spec) return formatInt(item.cpu_spec.cores_per_cpu) + ' cores / CPU (lookup); total unknown';
+  return 'cores unknown';
+}
+
+function cpuSpecSection(item) {
+  const section = el('section', { className: 'benchmark-detail', attrs: { 'aria-label': 'CPU core reference' } });
+  section.append(el('h3', { text: 'CPU core reference' }));
+  const spec = item.cpu_spec;
+  if (!spec) {
+    section.append(el('p', { text: 'No exact CPU specification match. Core counts are not guessed from similar names.' }));
+    return section;
+  }
+  section.append(el('p', { text: spec.cpu_model + ': ' + formatInt(spec.cores_per_cpu) + ' physical cores per CPU (not threads).' }));
+  if (item.inferred_total_cores != null) {
+    section.append(el('p', { text: formatInt(spec.cores_per_cpu) + ' × ' + item.cpu_count + ' stated populated CPUs = ' + formatInt(item.inferred_total_cores) + ' reference total cores.' }));
+    if (item.total_cores != null && item.total_cores !== item.inferred_total_cores) {
+      section.append(el('p', { className: 'err', text: 'Reported/entered total is ' + formatInt(item.total_cores) + ', which differs from the reference total. Your value is kept; review the CPU model and populated count.' }));
+    }
+  } else {
+    section.append(el('p', { text: 'Total unknown: populated CPU count is not established. Chassis socket capacity is not used.' }));
+  }
+  section.append(cpuSpecSource(spec), document.createTextNode(' · '), small('Reference retrieved ' + (formatDate(spec.retrieved_at) || 'date unknown') + '. Model specifications do not verify what is installed in this listing.'));
+  return section;
+}
+
 function externalLink(href, text, label) {
   const attrs = { href, target: '_blank', rel: 'noopener noreferrer' };
   if (label) attrs['aria-label'] = label;
@@ -501,7 +535,7 @@ function buildRow(item) {
 
   const cpuCell = el('td', null, [
     document.createTextNode(item.cpu_model ? (item.cpu_count == null ? '?' : item.cpu_count) + '× ' + item.cpu_model : 'CPU unknown'),
-    small((item.total_cores == null ? 'cores unknown' : formatInt(item.total_cores) + ' cores total') + claimTag(item)),
+    small(coreSummary(item) + claimTag(item)),
   ]);
 
   const socketCell = el('td', null, [
@@ -1221,7 +1255,7 @@ function renderDetail(item) {
   appendCallout(nodes, 'Excluded or missing', item.exclusions);
 
   const list = el('dl');
-  dlRow(list, 'Processors', item.cpu_model ? (item.cpu_count == null ? '?' : item.cpu_count) + '× ' + item.cpu_model + ' · ' + (item.total_cores == null ? 'cores unknown' : item.total_cores + ' installed cores') : 'Unknown');
+  dlRow(list, 'Processors', item.cpu_model ? (item.cpu_count == null ? '?' : item.cpu_count) + '× ' + item.cpu_model + ' · ' + coreSummary(item) : 'Unknown');
   dlRow(list, 'Socket population', socketLabel(item) + ' — ' + populatedLabel(item.cpu_count));
   if (item.variant_label) dlRow(list, item.origin === 'manual' ? 'Manual option' : offerOf(item).kind === 'historical_configuration' ? 'Historical option' : 'Option', item.variant_label);
   dlRow(list, 'Memory', ramDisplay(item) + (ramPairingNote(item) ? ' — ' + ramPairingNote(item) : ''));
@@ -1248,6 +1282,7 @@ function renderDetail(item) {
 
   const siblings = siblingsSection();
   if (siblings) nodes.push(siblings);
+  nodes.push(cpuSpecSection(item));
   nodes.push(benchmarkSection(item));
   nodes.push(evidenceSection(item));
   if (item.origin === 'manual' && view && view.manual && view.manual.original) nodes.push(originalSection(view.manual.original));
@@ -1641,7 +1676,7 @@ const EDIT_SPECS = [
   { group: 'Server', key: 'model', label: 'Server model', kind: 'model', config: true, help: 'Choose a catalog model from this vendor, or leave unknown.' },
   { group: 'Processor', key: 'cpu_model', label: 'CPU model', kind: 'text', max: 100, config: true, help: 'Blank means unknown.' },
   { group: 'Processor', key: 'cpu_count', label: 'Populated CPUs', kind: 'int', min: 1, max: 8, config: true, help: 'Whole number 1 to 8. Blank means unknown.' },
-  { group: 'Processor', key: 'total_cores', label: 'Total installed cores', kind: 'int', min: 1, max: 8192, config: true, help: 'All populated CPUs combined. If you change the CPU, enter the new total or leave blank (unknown).' },
+  { group: 'Processor', key: 'total_cores', label: 'Total installed cores', kind: 'int', min: 1, max: 8192, config: true, help: 'All populated CPUs combined, not threads. Look up a CPU reference below, enter a total yourself, or leave unknown.' },
   { group: 'Memory', key: 'ram_gb', label: 'Installed RAM (GB)', kind: 'int', min: 0, max: 1048576, config: true, help: 'Enter 0 if this configuration includes no RAM. Leave blank if unknown.' },
   { group: 'Chassis and storage', key: 'drive_bays', label: 'Drive bays', kind: 'int', min: 1, max: 128, config: true, help: 'Whole number 1 to 128. Blank means unknown.' },
   { group: 'Chassis and storage', key: 'drive_size', label: 'Drive form factor', kind: 'select', config: true, options: [['', 'Unknown'], ['SFF', '2.5″ SFF'], ['LFF', '3.5″ LFF']], help: 'Bay size.' },
@@ -1925,6 +1960,7 @@ function setEditorFrozen(frozen) {
     }
   }
   $('close').disabled = frozen;
+  syncCoreLookupButtons(editor);
 }
 
 function onFieldEdited(spec) {
@@ -1941,6 +1977,7 @@ function onFieldEdited(spec) {
   setErr(spec.key, '');
   updateSourceNote(spec);
   if (spec.config) clearPriceConfirmation();
+  if (['cpu_model', 'cpu_count', 'cpu_included'].includes(spec.key)) invalidateCoreLookup();
 }
 
 function resetField(spec) {
@@ -1964,6 +2001,7 @@ function resetField(spec) {
   setErr(spec.key, '');
   updateSourceNote(spec);
   if (spec.config) clearPriceConfirmation();
+  if (['cpu_model', 'cpu_count', 'cpu_included'].includes(spec.key)) invalidateCoreLookup();
   control.input.focus();
 }
 
@@ -2026,8 +2064,103 @@ function buildField(spec) {
   return node;
 }
 
+function coreLookupKey(ed) {
+  return JSON.stringify([ed.raw.cpu_model.trim(), ed.raw.cpu_count.trim(), ed.raw.cpu_included]);
+}
+
+function syncCoreLookupButtons(ed) {
+  if (!ed || !ed.coreNodes) return;
+  ed.coreNodes.lookup.disabled = ed.submitting || !!(ed.coreLookup && ed.coreLookup.busy) || !ed.raw.cpu_model.trim();
+  const apply = ed.coreNodes.result.querySelector('#ed-use-core-total');
+  if (apply) apply.disabled = ed.submitting;
+}
+
+function invalidateCoreLookup() {
+  const ed = editor;
+  if (!ed) return;
+  if (ed.coreLookup && ed.coreLookup.controller) ed.coreLookup.controller.abort();
+  ed.coreLookup = null;
+  if (ed.coreNodes) {
+    ed.coreNodes.lookup.textContent = 'Look up cores';
+    ed.coreNodes.result.replaceChildren();
+    syncCoreLookupButtons(ed);
+  }
+}
+
+function buildCoreLookup() {
+  const ed = editor;
+  const lookup = actionButton('Look up cores', lookupEditorCores, 'ed-lookup-cores');
+  const result = el('div', { attrs: { id: 'ed-core-result', role: 'status', 'aria-live': 'polite' } });
+  ed.coreNodes = { lookup, result };
+  syncCoreLookupButtons(ed);
+  return el('div', { className: 'editor-field' }, [
+    el('small', { className: 'field-help', text: 'Offline CPU specification lookup. Looking up never changes your entry; choose Use total to apply it, then save.' }),
+    el('div', { className: 'editor-actions' }, [lookup]),
+    result,
+  ]);
+}
+
+async function lookupEditorCores() {
+  const ed = editor;
+  if (!ed || ed.submitting || (ed.coreLookup && ed.coreLookup.busy)) return;
+  const model = ed.raw.cpu_model.trim();
+  const count = fromRaw(specOf('cpu_count'), ed.raw.cpu_count);
+  if (!model || !count.ok) {
+    if (!count.ok) setErr('cpu_count', count.error);
+    return;
+  }
+  invalidateCoreLookup();
+  const lookup = { controller: new AbortController(), key: coreLookupKey(ed), busy: true };
+  ed.coreLookup = lookup;
+  ed.coreNodes.lookup.textContent = 'Looking up…';
+  ed.coreNodes.result.textContent = 'Looking up physical cores in the packaged CPU catalog…';
+  syncCoreLookupButtons(ed);
+  const params = new URLSearchParams({ cpu_model: model });
+  if (count.value != null && ed.raw.cpu_included !== 'missing') params.set('cpu_count', String(count.value));
+  const timer = window.setTimeout(() => lookup.controller.abort(), 10000);
+  try {
+    const data = await fetchJson('/api/cpu-specs?' + params.toString(), lookup.controller.signal);
+    if (editor !== ed || ed.coreLookup !== lookup || coreLookupKey(ed) !== lookup.key) return;
+    const result = ed.coreNodes.result;
+    if (!data.match) {
+      result.textContent = 'No exact CPU reference found. Your total is unchanged; enter it manually if known.';
+      return;
+    }
+    const spec = data.match;
+    result.replaceChildren(
+      el('p', { className: 'field-help', text: spec.cpu_model + ': ' + formatInt(spec.cores_per_cpu) + ' physical cores per CPU (not threads).' }),
+      cpuSpecSource(spec),
+      document.createTextNode(' · '),
+      small('Reference retrieved ' + (formatDate(spec.retrieved_at) || 'date unknown') + '.'),
+    );
+    if (data.total_cores == null) {
+      result.append(el('p', { className: 'field-help', text: ed.raw.cpu_included === 'missing' ? 'CPUs are marked missing; no installed total can be filled.' : 'Enter the populated CPU count to calculate a total. Socket capacity is not used.' }));
+      return;
+    }
+    result.append(el('p', { className: 'field-help', text: formatInt(spec.cores_per_cpu) + ' × ' + count.value + ' populated CPUs = ' + formatInt(data.total_cores) + ' total cores. Applying replaces only the total-core entry.' }));
+    const apply = actionButton('Use ' + formatInt(data.total_cores) + ' total cores', () => {
+      if (editor !== ed || ed.submitting || ed.coreLookup !== lookup || coreLookupKey(ed) !== lookup.key) return;
+      ed.controls.total_cores.input.value = String(data.total_cores);
+      onFieldEdited(specOf('total_cores'));
+      ed.controls.total_cores.input.focus();
+    }, 'ed-use-core-total');
+    result.append(el('div', { className: 'editor-actions' }, [apply]));
+  } catch (error) {
+    if (editor !== ed || ed.coreLookup !== lookup) return;
+    ed.coreNodes.result.textContent = 'Could not look up cores (' + (error.name === 'AbortError' ? 'request timed out' : error.message || 'network error') + '). Your entry is unchanged; try again or enter it manually.';
+  } finally {
+    window.clearTimeout(timer);
+    lookup.busy = false;
+    if (editor === ed && ed.coreLookup === lookup) {
+      ed.coreNodes.lookup.textContent = 'Look up cores';
+      syncCoreLookupButtons(ed);
+    }
+  }
+}
+
 function renderEditor() {
   const ed = editor;
+  invalidateCoreLookup();
   ed.controls = {};
   const verb = ed.mode === 'add' ? 'Add configuration' : 'Edit details';
   $('detail-title').textContent = verb + ' — ' + modelTitle(ed.item);
@@ -2084,6 +2217,7 @@ function renderEditor() {
   for (const group of groups) {
     const fieldset = el('fieldset', { className: 'editor-group' }, [el('legend', { text: group.name })]);
     for (const spec of group.specs) fieldset.append(buildField(spec));
+    if (group.name === 'Processor') fieldset.append(buildCoreLookup());
     if (group.name === 'Price') {
       const box = el('input', { attrs: { type: 'checkbox', id: 'ed-price_confirmed', 'aria-describedby': 'ed-price_confirmed-help ed-price_confirmed-err' } });
       box.checked = ed.price_confirmed;
@@ -2351,6 +2485,7 @@ function init() {
   });
   dialog.addEventListener('close', () => {
     detailSeq += 1;
+    invalidateCoreLookup();
     editor = null;
     editorLoading = 0;
     window.clearTimeout(fetchTimer);

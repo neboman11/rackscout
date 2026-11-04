@@ -15,6 +15,7 @@ from typing import Any
 
 import psycopg
 
+from . import cpu_specs
 from .config import VENDOR_INDEX_URLS
 from .domain import SUPPORTED_VENDORS
 
@@ -64,7 +65,7 @@ c.id, c.variant_id, c.variant_label, c.model, c.cpu_model, c.cpu_count, c.cpu_co
 c.ram_gb, c.ram_state, c.drive_bays, c.bays_state, c.drive_size, c.size_state, c.storage_state, c.storage_conf,
 c.hardware_state, c.damage, c.price_kind, c.item_price, c.shipping_price, c.quoted_total, c.currency,
 c.shipping_context, c.evidence, c.warnings, c.exclusions,
-c.origin, c.revision, c.essential_states, c.manual_data, c.manual_created_at, c.manual_updated_at,
+c.origin, c.revision, c.cpu_model_state, c.essential_states, c.manual_data, c.manual_created_at, c.manual_updated_at,
 c.source_configuration_id, src.revision AS source_revision, src.active AS source_active,
 (c.origin = 'manual' AND (src.active IS NOT TRUE
   OR src.revision IS DISTINCT FROM (c.manual_data->'baseline'->>'source_revision')::integer)) AS source_changed,
@@ -343,8 +344,33 @@ def _manual(r: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+_REFERENCE_STATES = ("confirmed", "inferred")
+
+
+def _cpu_reference(r: dict[str, Any]) -> tuple[dict[str, Any] | None, int | None]:
+    """(per-CPU reference match, reference total) without touching reported ``total_cores``.
+
+    A total needs a known, non-conflicting model and a known populated count; chassis socket capacity is
+    never a population. A CPU explicitly missing or a conflicting model shows no reference at all.
+    """
+    states = r["essential_states"] or {}
+    model_state = r.get("cpu_model_state")
+    if states.get("cpu") == "missing" or model_state in ("conflicting", "unknown"):
+        return None, None
+    match = cpu_specs.lookup(r["cpu_model"])["match"]
+    # Legacy NULL essentials cannot establish CPU presence when some hardware is explicitly missing.
+    if r["essential_states"] is None and r["hardware_state"] == "missing":
+        return match, None
+    count = r["cpu_count"]
+    if (match is None or r["cpu_count_state"] not in _REFERENCE_STATES
+            or isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= cpu_specs.MAX_CPU_COUNT):
+        return match, None
+    return match, match["cores_per_cpu"] * count
+
+
 def serialize(r: dict[str, Any], match_state: str) -> dict[str, Any]:
     benchmark = None
+    cpu_spec, inferred_total_cores = _cpu_reference(r)
     if r.get("cpu_mark") is not None:
         benchmark = {
             "cpu_mark": r["cpu_mark"],
@@ -406,6 +432,8 @@ def serialize(r: dict[str, Any], match_state: str) -> dict[str, Any]:
         "origin": r["origin"],
         "revision": r["revision"],
         "essential_states": r["essential_states"],
+        "cpu_spec": cpu_spec,
+        "inferred_total_cores": inferred_total_cores,
         "manual": _manual(r),
     }
 

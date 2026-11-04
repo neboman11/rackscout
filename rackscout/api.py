@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
-from . import db, manual, queries, refresh
+from . import cpu_specs, db, manual, queries, refresh
 from .config import load_settings
 from .domain import SUPPORTED_VENDORS, normalize_vendor
 
@@ -185,6 +185,14 @@ def parse_filters(
         page=_opt_int("page", page, 1, 1, 100000) or 1,
         page_size=_opt_int("page_size", page_size, 50, 1, 100) or 50,
     )
+
+
+@app.get("/api/cpu-specs")
+def cpu_specs_lookup(
+    cpu_model: Annotated[str, Query(min_length=1, max_length=100)],
+    cpu_count: Annotated[int | None, Query(ge=1, le=8)] = None,
+) -> dict[str, Any]:
+    return cpu_specs.lookup(cpu_model, cpu_count)
 
 
 @app.get("/health")

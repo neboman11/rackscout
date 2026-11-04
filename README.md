@@ -89,6 +89,17 @@ RACKSCOUT_TEST_DATABASE_URL=postgresql://rackscout_test@localhost/rackscout_test
 
 Tests use unique schemas, reject non-test database names and missing hosts, and never drop `public` or fall back to the application's database URL. Database tests skip without a test DSN. Benchmark test fixtures are synthetic, not redistributed third-party scores.
 
+## CPU core counts
+
+RackScout bundles **214 CPU specification references**: 213 validated entries from [Compute Specs DB](https://github.com/elokwentnie/compute-specs-db), pinned to commit `9b64d1770b9fea2b749e3ad599172ad0bd900f68`, plus the official Intel [Bronze 3104 specification](https://www.intel.com/content/www/us/en/products/sku/123546/intel-xeon-bronze-3104-processor-8-25m-cache-1-70-ghz/specifications.html). The MIT notice is retained in `rackscout/data/CPU_SPECS_LICENSE`. Only model/core facts are bundled, not third-party benchmark scores.
+
+Rows use reported/entered totals first. Otherwise, an exact CPU match supplies clearly labelled physical cores per CPU and, when populated CPU count is known, a reference total. Two Gold 6150 CPUs therefore give 18 cores per CPU and 36 total; a two-socket chassis alone does not establish a total. Detail views show the source/date and flag disagreements without changing entered values. These are model specifications, not proof of installed hardware or enabled cores.
+
+In the editor, **Look up cores** displays a reference without modifying the draft. **Use N total cores** explicitly fills the field; save to keep it. Applying follows normal manual-field and price-confirmation rules. Unknown population or CPUs marked missing cannot fill an installed total. SKU versions and suffixes stay distinct; ambiguous, contradictory or unsupported names remain unknown rather than borrowing a similar CPU's count.
+
+Lookup uses the packaged snapshot, with no API key, database migration, external request, extra scrape job or change to daily collection. New CPU coverage arrives with a reviewed catalog/release update; this is not a live vendor API. GET `/api/cpu-specs?cpu_model=Gold%206150&cpu_count=2` is also available.
+
+
 ## CPU benchmarks
 
 Scores are reference averages for **one CPU**, not measurements of the advertised server. CPU count, chassis sockets and installed total cores are separate fields. Scores are never multiplied for dual-populated systems. Missing references show “Not available,” not zero.
@@ -104,7 +115,7 @@ An unset dataset path leaves existing database references unchanged; a fresh dat
 `Dockerfile` uses the Playwright 1.58.0 Python image matching the pinned dependency. The runtime is non-root; production workloads use a read-only root filesystem, writable temporary storage, no Kubernetes API token and no-new-privileges. No host credentials or Docker socket are mounted.
 
 ```sh
-podman build -t localhost/rackscout:0.5.0 .
+podman build -t localhost/rackscout:0.6.0 .
 ```
 
 `compose.yaml` provides PostgreSQL, migration, web and on-demand collection. Export a strong `POSTGRES_PASSWORD` before starting it. Web binds to localhost.
