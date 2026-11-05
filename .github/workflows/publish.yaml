@@ -55,7 +55,29 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build immutable release image
-        run: docker build --pull --label org.opencontainers.image.source=https://github.com/${{ github.repository }} --tag ghcr.io/${{ github.repository }}:${{ github.sha }} .
-      - name: Publish immutable release image
-        run: docker push ghcr.io/${{ github.repository }}:${{ github.sha }}
+      - name: Derive release version
+        id: version
+        run: |
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "pyproject version '$version' is not X.Y.Z" >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Refuse to overwrite an existing release tag
+        run: |
+          ref="ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}"
+          if out="$(docker manifest inspect "$ref" 2>&1)"; then
+            echo "Release tag $ref already published; bump pyproject version" >&2
+            exit 1
+          fi
+          if ! grep -qiE 'no such manifest|manifest unknown' <<<"$out"; then
+            echo "Cannot determine whether $ref exists; aborting: $out" >&2
+            exit 1
+          fi
+      - name: Build semantic-version release image
+        run: >-
+          docker build --pull
+          --label org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          --label org.opencontainers.image.version=${{ steps.version.outputs.version }}
+          --label org.opencontainers.image.revision=${{ github.sha }}
+          --tag ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }} .
+      - name: Publish semantic-version release image
+        run: docker push ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
