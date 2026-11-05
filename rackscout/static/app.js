@@ -22,15 +22,15 @@ const DEFAULTS = {
   hide_damaged: 'true',
   modern_only: 'true',
   confirmed_only: 'false',
-  include_leads: 'true',
+  match_status: 'all',
   q: '',
   sort: 'price',
   page: '1',
 };
-const SELECT_KEYS = ['vendor', 'generation', 'height', 'min_ram', 'min_bays', 'drive_size', 'cpu_count'];
+const SELECT_KEYS = ['vendor', 'generation', 'height', 'min_ram', 'min_bays', 'drive_size', 'cpu_count', 'match_status'];
 const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 +\-]{0,59}$/;
 const MAX_MODELS = 100;
-const CHECK_KEYS = ['diskless', 'hide_damaged', 'modern_only', 'confirmed_only', 'include_leads'];
+const CHECK_KEYS = ['diskless', 'hide_damaged', 'modern_only', 'confirmed_only'];
 const HARDWARE_FILTERS = [
   { key: 'cpu_manufacturer', facet: 'cpu_manufacturers', title: 'CPU manufacturer', all: 'All manufacturers' },
   { key: 'cpu_architecture', facet: 'cpu_architectures', title: 'CPU architecture family', all: 'All families' },
@@ -266,6 +266,7 @@ function readStateFromUrl() {
     next[key] = next[key] === 'false' ? 'false' : next[key] === 'true' ? 'true' : DEFAULTS[key];
   }
   if (!['price', 'ram', 'bays', 'benchmark'].includes(next.sort)) next.sort = DEFAULTS.sort;
+  if (!['all', 'match', 'lead'].includes(next.match_status)) next.match_status = 'all';
   const bounds = { generation: [1, 100], height: [1, 10], min_ram: [0, 65536], min_bays: [0, 64], cpu_count: [1, 2], page: [1, 100000] };
   for (const [key, [low, high]] of Object.entries(bounds)) {
     const raw = next[key].trim();
@@ -574,9 +575,9 @@ function renderListings(data) {
   const leads = Number(data.total_leads) || 0;
   lastPages = Math.max(1, Number(data.pages) || 1);
 
-  $('count').textContent = plural(matches, 'matching server', 'matching servers');
-  const notes = [];
-  if (leads > 0) notes.push(plural(leads, 'unverified lead', 'unverified leads') + ' shown separately');
+  $('count').textContent = plural(Number(data.total) || 0, 'server', 'servers');
+  const notes = [plural(matches, 'match', 'matches') + ' · ' + plural(leads, 'unverified listing', 'unverified listings')];
+  notes.push(state.sort === 'price' ? 'Sorted by shown price; unknown shipping is additional' : 'Sorted together; status does not change order');
   if (items.some(item => item.match_state === 'match' && item.hardware_state !== 'confirmed')) {
     notes.push('some matches need hardware review');
   }
@@ -586,19 +587,16 @@ function renderListings(data) {
 
   const table = $('table');
   for (const body of table.querySelectorAll('tbody')) body.remove();
-  const matchItems = items.filter(item => item.match_state !== 'lead');
-  const leadItems = items.filter(item => item.match_state === 'lead');
-  if (matchItems.length) table.append(buildGroup('Matches', matches, 'Meet every selected filter on known data.', matchItems, false));
-  if (leadItems.length) {
-    table.append(buildGroup('Unverified leads', leads, 'Not matches: some filtered fields are unknown or uncertain. Verify with the seller.', leadItems, true));
-  }
+  const body = el('tbody');
+  for (const item of items) body.append(buildRow(item));
+  table.append(body);
 
   const empty = items.length === 0;
   $('table').closest('.table-wrap').hidden = empty;
   $('empty').hidden = !empty;
   if (empty) {
     $('empty-text').textContent = leads === 0 && matches === 0
-      ? 'No listings match these filters. Try a higher budget, fewer required bays, or include unverified leads.'
+      ? 'No listings match these filters. Try a higher budget, fewer required bays, or a different match-status filter.'
       : 'This page has no listings. Return to the first page.';
   }
 
@@ -609,16 +607,6 @@ function renderListings(data) {
   $('next').disabled = page >= lastPages;
 }
 
-function buildGroup(title, total, description, items, isLeads) {
-  const body = el('tbody');
-  const heading = el('th', { attrs: { colspan: '8', scope: 'colgroup' } }, [
-    document.createTextNode(title + ' (' + formatInt(total) + ')'),
-    el('span', { text: description }),
-  ]);
-  body.append(el('tr', { className: 'group-head' + (isLeads ? ' leads' : '') }, [heading]));
-  for (const item of items) body.append(buildRow(item));
-  return body;
-}
 
 function buildRow(item) {
   const nameButton = el('button', {
@@ -627,7 +615,7 @@ function buildRow(item) {
     attrs: {
       type: 'button',
       'data-id': String(item.id),
-      'aria-label': 'View ' + (item.origin === 'manual' ? 'manual configuration ' : '') + modelTitle(item) + ', RAM ' + ramDisplay(item) + ', ' + storageLabel(item) + ', ' + priceAria(item),
+      'aria-label': 'View ' + (item.match_state === 'match' ? 'match, ' : 'unverified listing, ') + (item.origin === 'manual' ? 'manual configuration ' : '') + modelTitle(item) + ', RAM ' + ramDisplay(item) + ', ' + storageLabel(item) + ', ' + priceAria(item),
     },
   });
   const seller = [item.platform || providerName(item.provider || 'PerUnitPrice'), item.rack_units == null ? 'height unknown' : item.rack_units + 'U', item.condition || 'condition unknown'].join(' · ');
@@ -657,7 +645,9 @@ function buildRow(item) {
   ]);
 
   const row = el('tr', null, [
-    el('td', null, [nameButton, manualBadge(item), variantLine(item), small(seller), manualUpdatedNote(item)]),
+    el('td', null, [nameButton,
+      el('span', { className: 'badge ' + (item.match_state === 'match' ? 'good' : 'review'), text: item.match_state === 'match' ? 'Match' : 'Unverified' }),
+      manualBadge(item), variantLine(item), small(seller), manualUpdatedNote(item)]),
     cpuCell,
     socketCell,
     benchmarkCell(item),

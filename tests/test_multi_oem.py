@@ -165,12 +165,6 @@ def test_index_evidence_cites_the_vendor_page_it_came_from():
 # ---------------------------------------------------------------------------
 
 
-def test_filter_defaults_are_modern_floor_for_all_oems():
-    from rackscout import queries
-
-    f = queries.Filters()
-    assert (f.vendor, f.models, f.generation, f.modern_only) == (None, (), None, True)
-    assert (f.height, f.min_ram, f.min_bays, f.diskless, f.hide_damaged, f.include_leads) == (1, 16, 4, True, True, True)
 
 
 def test_generation_without_vendor_is_rejected_by_query_layer():

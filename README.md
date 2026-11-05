@@ -48,7 +48,7 @@ Retailer currency must be explicitly confirmed as USD. Unknown shipping stays un
 
 Native retailer variants retain their own prices and published option labels. Exact prices require explicit installed CPU/RAM facts for that native configuration. Chassis, builders, platform maximums, quote-only products and unexplained options never become complete-server deals at a minimum price. Merchant observations are labelled retailer quotes, **not browser verification**. ServerMonkey is not integrated: its public endpoints rejected access. Non-US retailers and currency conversion are excluded.
 
-Title RAM and starting prices are not verified configuration pairs. A listing titled 64GB can price its no-RAM option. Unverified/base-price leads are separate from matching configurations. Explicit missing operating essentials exclude a configuration; generic “tested” wording does not manufacture positive assertions for every component.
+Title RAM and starting prices are not verified configuration pairs. A listing titled 64GB can price its no-RAM option. Rows carry **Match** or **Unverified** badges; the **Match status** filter selects all listings, matches only or unverified only. Results use one globally sorted list, never confidence-first groups. Explicit missing operating essentials exclude a configuration; generic “tested” wording does not manufacture positive assertions for every component.
 
 Configuration rows distinguish captured option prices from starting prices. Base/range quotes show **$XXX+**; advertised RAM is labelled **Listed** and is not promised at that price. Positive evidence of hardware choices produces **Multiple options available**; otherwise the row says **Configuration options unverified**, not that multiple options definitely exist. Open a row for the evidence and original server specifications.
 
@@ -60,7 +60,7 @@ RAM and storage distinguish **Not included** (explicit absence), **Not stated** 
 
 Shipping amounts are source quotes with an unconfirmed destination, not delivered prices for your postcode. Browser delivery preferences do not obtain a new quote when the source cannot provide one. Unknown shipping is not zero; unknown totals cannot satisfy a maximum-total filter as matches. Tax and import charges are excluded.
 
-When item price is known but shipping is not, the headline shows **$740.95 + shipping**, or **From $200.00 + shipping** for a starting price. The API total remains null: this display does not assume free shipping or change sorting, maximum-total eligibility or quote confidence.
+When item price is known but shipping is not, the headline shows **$740.95 + shipping**, or **From $200.00 + shipping** for a starting price. **Price: low to high** sorts all rows numerically by the quoted total when known, otherwise by item price, with missing prices last and stable ID tie-breaking. Unknown shipping remains additional, never free; maximum-total eligibility and quote confidence are unchanged. Other sort modes also mix matches and unverified rows.
 
 ## Manual configurations
 
@@ -135,7 +135,7 @@ An unset dataset path leaves existing database references unchanged; a fresh dat
 `Dockerfile` uses the Playwright 1.64.1 Python image matching the pinned dependency. The runtime is non-root; production workloads use a read-only root filesystem, writable temporary storage, no Kubernetes API token and no-new-privileges. No host credentials or Docker socket are mounted.
 
 ```sh
-podman build -t localhost/rackscout:0.9.0 .
+podman build -t localhost/rackscout:0.10.0 .
 ```
 
 `compose.yaml` provides PostgreSQL, migration, web and on-demand collection. Export a strong `POSTGRES_PASSWORD` before starting it. Web binds to localhost.
@@ -204,3 +204,5 @@ Upgrading from a release without manual-row collector guards requires a clean cu
 Release 0.8.0 migration 006 changes source identity to `(provider, item_id)` and preserves existing listing/configuration IDs, manual entries and history. It takes the collector lock before the cutover. Drain old collectors, retain Recreate, back up PostgreSQL, and migrate before starting the new release. Old releases reject the new schema; do not roll back to an old image after migration without a deliberate database recovery plan.
 
 Release 0.9.0 migration 007 adds CPU platform references and derived configuration keys/memory types, including existing manual configurations. Reclassification does not revise saved hardware, prices, notes, history or quote timestamps. As with other schema upgrades, keep the clean cutover and PostgreSQL backup precautions above; no collection is needed to classify existing inventory.
+
+Release 0.10.0 removes confidence-first grouping in favor of global sorting, per-row status badges and an explicit match-status filter. Price order compares known quoted totals with item-price lower bounds when shipping is unknown. No schema migration or collection run is required.

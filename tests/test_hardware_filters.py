@@ -170,11 +170,11 @@ def test_api_hardware_parameter_count_is_bounded():
 ])
 def test_filters_or_within_and_across_and_exclude_unknown_from_matches_and_leads(conn, filters, expected):
     _discover(conn)
-    for include_leads in (True, False):
-        result = _result(conn, page_size=100, include_leads=include_leads, **filters)
+    for match_status in ("all", "match"):
+        result = _result(conn, page_size=100, match_status=match_status, **filters)
         found = {i["item_id"] for i in result["items"]}
         assert found <= expected
-        if include_leads:
+        if match_status == "all":
             assert found == expected
         assert result["total"] == len(found)
         assert result["total_matches"] + result["total_leads"] == result["total"]

@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
 <title>RackScout — used rack server finder</title>
-<link rel="stylesheet" href="/static/app.css?v=0.9.0">
-<script src="/static/app.js?v=0.9.0" defer></script>
+<link rel="stylesheet" href="/static/app.css?v=0.10.0">
+<script src="/static/app.js?v=0.10.0" defer></script>
 </head>
 <body>
 <a href="#inventory" class="sr-only">Skip to inventory</a>
@@ -107,6 +107,7 @@
           </details>
           <small id="memory_platform-help" class="field-help">DDR generation, not installed capacity. Tick more than one to compare platforms.</small>
         </div>
+        <label class="field"><span>Match status</span><select id="match_status"><option value="all">All listings</option><option value="match">Matches only</option><option value="lead">Unverified only</option></select></label>
         <label class="field"><span>Maximum total price (USD)</span><input id="max_total" type="text" placeholder="No limit" inputmode="decimal" autocomplete="off" aria-describedby="max_total_help"><small id="max_total_help" class="field-help">Applies to known quoted totals. An unknown total never counts as a match; a base-price listing that might fit appears only under unverified leads.</small></label>
         <div id="max_total_error" class="field-error" role="alert" hidden></div>
         <div class="rule">
@@ -114,7 +115,6 @@
           <label class="check"><input type="checkbox" id="hide_damaged"><span>Hide damaged chassis</span></label>
           <label class="check"><input type="checkbox" id="modern_only"><span>Dell 14G-era or newer platforms only<small>Uses sourced comparable platforms for every vendor. Unknown generation never counts. Turn off to inspect older or unclassified servers.</small></span></label>
           <label class="check"><input type="checkbox" id="confirmed_only"><span>Confirmed hardware only<small>Excludes unverified leads and unknown CPU, RAM, PSU, cooling or NIC status.</small></span></label>
-          <label class="check"><input type="checkbox" id="include_leads"><span>Include unverified leads<small>Shown in a separate group, never counted as matches.</small></span></label>
         </div>
       </form>
       <div class="filter-footer">8+ bays highlighted, not required.<br>Missing accessories called out separately.</div>
@@ -135,7 +135,7 @@
         <div><strong id="count" aria-live="polite"></strong><div class="subtle" id="summary-note"></div></div>
         <label class="sort" for="sort">Sort by
           <select id="sort">
-            <option value="price">Total price: low to high</option>
+            <option value="price">Price: low to high</option>
             <option value="ram">RAM: high to low</option>
             <option value="bays">Drive bays: high to low</option>
             <option value="benchmark">CPU Mark per CPU: high to low</option>
@@ -148,7 +148,7 @@
       <div id="results">
         <div class="table-wrap" tabindex="0" role="region" aria-label="Server comparison table, scroll horizontally on narrow screens">
           <table id="table">
-            <caption class="sr-only">Server listings grouped into matches and unverified leads. Totals are item plus quoted shipping, tax excluded. Benchmarks are per-CPU PassMark reference averages, not scores measured on these listings.</caption>
+            <caption class="sr-only">Server listings sorted together, with Match and Unverified badges. Price uses item plus quoted shipping when known, otherwise the item price plus unspecified shipping. Tax excluded. Benchmarks are per-CPU reference averages.</caption>
             <thead><tr>
               <th scope="col">Server / Platform</th>
               <th scope="col">CPU</th>

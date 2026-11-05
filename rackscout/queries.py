@@ -2,8 +2,8 @@
 
 All SQL fragments are constants; user input only flows through bound
 parameters. Unknown or conflicting values never satisfy positive constraints:
-rows without a known contradiction may appear only as separately grouped
-``lead`` rows, never as matches.
+rows without a known contradiction may appear only as explicitly badged
+``lead`` rows, never as matches. Confidence does not change sort priority.
 """
 from __future__ import annotations
 
@@ -21,10 +21,10 @@ from .domain import SUPPORTED_VENDORS
 from .retail_sources import RETAILERS
 
 SORTS = {
-    "price": "(quoted_total IS NULL) ASC, quoted_total ASC, item_price ASC NULLS LAST",
-    "ram": "ram_gb DESC NULLS LAST, (quoted_total IS NULL) ASC, quoted_total ASC",
-    "bays": "drive_bays DESC NULLS LAST, (quoted_total IS NULL) ASC, quoted_total ASC",
-    "benchmark": "cpu_mark DESC NULLS LAST, (quoted_total IS NULL) ASC, quoted_total ASC",
+    "price": "coalesce(quoted_total, item_price) ASC NULLS LAST",
+    "ram": "ram_gb DESC NULLS LAST, coalesce(quoted_total, item_price) ASC NULLS LAST",
+    "bays": "drive_bays DESC NULLS LAST, coalesce(quoted_total, item_price) ASC NULLS LAST",
+    "benchmark": "cpu_mark DESC NULLS LAST, coalesce(quoted_total, item_price) ASC NULLS LAST",
 }
 
 # A stored eBay page verification applies to the current index observation only
@@ -154,7 +154,7 @@ class Filters:
     diskless: bool = True
     hide_damaged: bool = True
     confirmed_only: bool = False
-    include_leads: bool = True
+    match_status: str = "all"
     q: str | None = None
     sort: str = "price"
     page: int = 1
@@ -252,11 +252,16 @@ def classified_sql(f: Filters, *, hide_overridden: bool = True) -> tuple[str, di
     if hide_overridden:
         hard.insert(0, HIDE_OVERRIDDEN_SQL)
     is_match = f"({' AND '.join(sat)}) AND NOT ({' OR '.join(bad)})"
-    lead_ok = "false" if (f.confirmed_only or not f.include_leads) else f"NOT ({' OR '.join(bad)})"
+    lead_ok = "false" if f.confirmed_only else f"NOT ({' OR '.join(bad)})"
+    eligibility = {
+        "all": "is_match OR lead_ok",
+        "match": "is_match",
+        "lead": "NOT is_match AND lead_ok",
+    }[f.match_status]
     sql = (
         f"SELECT * FROM (SELECT {SELECT_COLUMNS}, coalesce(({is_match}), false) AS is_match, "
         f"coalesce(({lead_ok}), false) AS lead_ok {FROM_SQL}{''.join(f' AND {h}' for h in hard)}) AS base "
-        "WHERE is_match OR lead_ok"
+        f"WHERE {eligibility}"
     )
     return sql, params
 
@@ -271,7 +276,7 @@ def query_listings(conn: psycopg.Connection, f: Filters) -> dict[str, Any]:
     pages = max(1, -(-total // f.page_size))
     order = SORTS[f.sort]
     rows = conn.execute(
-        f"SELECT * FROM ({inner}) AS r ORDER BY is_match DESC, {order}, id ASC LIMIT %(limit)s OFFSET %(offset)s",
+        f"SELECT * FROM ({inner}) AS r ORDER BY {order}, id ASC LIMIT %(limit)s OFFSET %(offset)s",
         {**params, "limit": f.page_size, "offset": (f.page - 1) * f.page_size},
     ).fetchall()
     return {

@@ -224,7 +224,6 @@ def test_base_price_title_ram_is_lead_and_verified_variant_is_match(conn):
     matches = [i for i in result["items"] if i["match_state"] == "match"]
     assert [(m["variant_id"], m["ram_gb"], m["quoted_total"]) for m in matches] == [("2", 32, "429.88")]
     assert all(i["variant_id"] != "1" for i in result["items"])  # NO RAM variant contradicts min RAM
-    assert result["items"][0]["match_state"] == "match"  # matches ordered before leads
 
     capped = queries.query_listings(conn, queries.Filters(max_total=Decimal("500"), min_bays=None, diskless=False))
     unknown = [i for i in capped["items"] if i["item_id"] == UNKNOWN_SHIP[0]]

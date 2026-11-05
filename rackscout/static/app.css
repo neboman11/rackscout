@@ -83,10 +83,6 @@ td{padding:17px 11px;border-top:1px solid #e4e8e4;vertical-align:middle;font-siz
 tbody tr:hover td{background:#f8faf6}
 td small{display:block;color:var(--muted);font-size:11px;margin-top:4px}
 th.num,td.money{text-align:right}
-.group-head th{background:#e3ebe6;color:var(--ink);font-size:12px;text-transform:none;letter-spacing:0;text-align:left;white-space:normal;padding:11px}
-.group-head.leads th{background:var(--warn);color:var(--amber)}
-.group-head th span{font-weight:400;color:var(--muted);margin-left:8px}
-.group-head.leads th span{color:var(--amber)}
 .name{border:0;background:none;padding:4px 0;font-weight:700;color:var(--ink);text-align:left;white-space:nowrap;font-size:14px;text-decoration:underline;text-decoration-color:#ccd4d4;text-underline-offset:4px;min-height:32px}
 .money{white-space:nowrap;font:700 17px ui-monospace,monospace;letter-spacing:-.5px}
 .money small{font:10px system-ui,sans-serif;letter-spacing:0}

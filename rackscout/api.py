@@ -149,7 +149,7 @@ def parse_filters(
     diskless: str | None = None,
     hide_damaged: str | None = None,
     confirmed_only: str | None = None,
-    include_leads: str | None = None,
+    match_status: str | None = None,
     q: Annotated[str | None, Query(max_length=200)] = None,
     sort: str | None = None,
     page: str | None = None,
@@ -200,6 +200,9 @@ def parse_filters(
     sort_key = (sort or "price").strip() or "price"
     if sort_key not in queries.SORTS:
         raise HTTPException(status_code=422, detail="sort must be price, ram, bays or benchmark")
+    status = (match_status or "all").strip().lower() or "all"
+    if status not in ("all", "match", "lead"):
+        raise HTTPException(status_code=422, detail="match_status must be all, match, or lead")
     text = (q or "").strip() or None
     return queries.Filters(
         providers=tuple(selected),
@@ -219,7 +222,7 @@ def parse_filters(
         diskless=_bool("diskless", diskless, True),
         hide_damaged=_bool("hide_damaged", hide_damaged, True),
         confirmed_only=_bool("confirmed_only", confirmed_only, False),
-        include_leads=_bool("include_leads", include_leads, True),
+        match_status=status,
         q=text,
         sort=sort_key,
         page=_opt_int("page", page, 1, 1, 100000) or 1,
