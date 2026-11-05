@@ -387,6 +387,10 @@ def _offer(r: dict[str, Any]) -> dict[str, Any]:
     if r["origin"] == "manual" and price_kind == "exact" and (r["manual_data"] or {}).get("price_confirmed") is True:
         return {"kind": "manual_configuration", "price_is_starting": False, "specification_price_paired": True,
                 "evidence": [_MANUAL_PRICE_EVIDENCE]}
+    if r["origin"] == "manual" and r["item_price"] is not None \
+            and (r["manual_data"] or {}).get("fields", {}).get("item_price") is not None:
+        return {"kind": "manual_unconfirmed", "price_is_starting": False, "specification_price_paired": False,
+                "evidence": ["Price manually entered; pairing with this configuration not confirmed"]}
     if price_kind == "exact":
         current = bool(r["page_current"] if r["provider"] == providers.EBAY else r["quote_current"])
         return {"kind": "configuration" if current else "historical_configuration",

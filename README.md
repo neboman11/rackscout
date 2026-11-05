@@ -68,6 +68,8 @@ Open a row and choose **Edit details** to fill in specifications, included/missi
 
 **Add configuration** creates another independent option for the same marketplace listing. Enter each RAM/CPU/component combination and its own item/shipping price; RackScout never generates combinations by mixing unrelated options. A new option does not inherit another option's price or shipping. Check the price-confirmation box only after checking that exact configuration; changing hardware clears it. Blank shipping is unknown, and explicit zero means free shipping.
 
+Entered amounts stay visible even when the price-confirmation box is unchecked, labelled **Price entered by you — configuration unconfirmed**. They sort by price but remain unverified rather than becoming confirmed matches. Changing hardware clears confirmation without erasing your amounts. Unknown shipping still shows **+ shipping**; entering zero explicitly means free shipping.
+
 Manual rows participate in filtering, sorting and pagination, with their own prices and matched CPU references. Manual quotes are labelled as entered by you, never browser-verified. Original source rows stay hidden while manual copies exist, even if the copies are filtered out, so a cheap base quote cannot reappear as a matching configuration. Removing the last copy restores the latest source row only if it is still active. Separate marketplace variants are unaffected.
 
 Entries survive automatic collection. Recorded dates and source-change warnings stay visible; collection cannot overwrite your values. Stale concurrent saves return a conflict and retain the draft rather than overwriting another edit. Pending saves freeze controls; completing a fetch does not discard an open draft. At most 100 active manual configurations are allowed per listing.
@@ -135,7 +137,7 @@ An unset dataset path leaves existing database references unchanged; a fresh dat
 `Dockerfile` uses the Playwright 1.64.1 Python image matching the pinned dependency. The runtime is non-root; production workloads use a read-only root filesystem, writable temporary storage, no Kubernetes API token and no-new-privileges. No host credentials or Docker socket are mounted.
 
 ```sh
-podman build -t localhost/rackscout:0.10.0 .
+podman build -t localhost/rackscout:0.10.1 .
 ```
 
 `compose.yaml` provides PostgreSQL, migration, web and on-demand collection. Export a strong `POSTGRES_PASSWORD` before starting it. Web binds to localhost.
@@ -206,3 +208,5 @@ Release 0.8.0 migration 006 changes source identity to `(provider, item_id)` and
 Release 0.9.0 migration 007 adds CPU platform references and derived configuration keys/memory types, including existing manual configurations. Reclassification does not revise saved hardware, prices, notes, history or quote timestamps. As with other schema upgrades, keep the clean cutover and PostgreSQL backup precautions above; no collection is needed to classify existing inventory.
 
 Release 0.10.0 removes confidence-first grouping in favor of global sorting, per-row status badges and an explicit match-status filter. Price order compares known quoted totals with item-price lower bounds when shipping is unknown. No schema migration or collection run is required.
+
+Release 0.10.1 migration 008 restores previously hidden, explicitly saved prices on unconfirmed manual configurations. No re-entry or collection is needed. Only effective money, shipping context and the stale unknown-total warning change; user metadata, confirmations, timestamps, hardware, source rows and history are preserved. Keep a pre-upgrade backup; older releases reject schema 008, so restore that backup before reverting to an older image.

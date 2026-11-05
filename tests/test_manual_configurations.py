@@ -568,8 +568,10 @@ def test_manual_price_pairing_versus_base_and_unknown_shipping(conn):
     entered_id = _create(conn, src, label="entered", fields={"ram_gb": 256, "item_price": "600.00",
                                                              "shipping_price": "0.00"})
     entered = _detail(conn, entered_id)
-    assert (entered["item_price"], entered["quoted_total"], entered["price_kind"]) == (None, None, "unknown")
-    assert manual.editor(conn, entered_id)["fields"]["item_price"] == "600.00"  # kept for re-confirmation
+    assert (entered["item_price"], entered["quoted_total"], entered["price_kind"]) == ("600.00", "600.00", "unknown")
+    assert entered["offer"]["kind"] == "manual_unconfirmed"
+    assert entered["offer"]["specification_price_paired"] is False and entered["match_state"] == "lead"
+    assert manual.editor(conn, entered_id)["fields"]["item_price"] == "600.00"
 
     no_ship = _detail(conn, _create(conn, src, label="no ship", fields={"ram_gb": 384, "item_price": "700.00"},
                                     price_confirmed=True))
@@ -581,8 +583,76 @@ def test_manual_price_pairing_versus_base_and_unknown_shipping(conn):
     # Changing the configuration without re-asserting the price drops the pairing.
     _update(conn, free["id"], label="free", fields={"ram_gb": 512, "item_price": "700.00", "shipping_price": "0.00"})
     changed = _detail(conn, free["id"])
-    assert changed["item_price"] is None and changed["offer"]["kind"] != "manual_configuration"
+    assert changed["item_price"] == "700.00" and changed["offer"]["kind"] == "manual_unconfirmed"
     assert changed["manual"]["price_confirmed"] is False
+
+
+@requires_db
+@pytest.mark.parametrize("item, shipping, total", [
+    ("123.45", None, None),
+    ("123.45", "0.00", "123.45"),
+    ("123.45", "10.00", "133.45"),
+    ("0.00", "0.00", "0.00"),
+])
+def test_unconfirmed_manual_amount_stays_visible_without_price_pairing(conn, item, shipping, total):
+    _discover(conn, [TRAP])
+    src = _source_id(conn, TRAP[0])
+    fields = {"ram_gb": 64, "item_price": item}
+    if shipping is not None:
+        fields["shipping_price"] = shipping
+    child = _create(conn, src, fields=fields)
+    detail = _detail(conn, child)
+    assert (detail["item_price"], detail["shipping_price"], detail["quoted_total"]) == (item, shipping, total)
+    assert detail["offer"]["kind"] == "manual_unconfirmed"
+    assert not detail["offer"]["price_is_starting"] and not detail["offer"]["specification_price_paired"]
+    assert detail["manual"]["price_confirmed"] is False and detail["match_state"] == "lead"
+    assert child not in _ids(_listed(conn, match_status="match"))
+    assert child in _ids(_listed(conn, match_status="lead"))
+    if Decimal(item) > 0:
+        assert child not in _ids(_listed(conn, max_total=Decimal("100.00")))
+
+    _update(conn, child, fields={"ram_gb": 64, "item_price": None})
+    cleared = _detail(conn, child)
+    assert cleared["item_price"] is None and cleared["quoted_total"] is None
+    assert cleared["offer"]["kind"] != "manual_unconfirmed"
+
+
+@requires_db
+@pytest.mark.parametrize("money, expected", [
+    ({"item_price": "456.78", "shipping_price": "12.34"}, ("456.78", "12.34", "469.12")),
+    ({"shipping_price": "12.34"}, (None, "12.34", None)),
+    ({"shipping_price": "0.00"}, (None, "0.00", None)),
+    ({"item_price": None, "shipping_price": "12.34"}, (None, "12.34", None)),
+])
+def test_upgrade_restores_saved_unconfirmed_prices_without_revising_user_work(conn, money, expected):
+    from rackscout import db
+
+    _discover(conn, [TRAP])
+    src = _source_id(conn, TRAP[0])
+    child = _create(conn, src, fields={"ram_gb": 128, **money})
+    confirmed = _create(conn, src, fields={"item_price": "700.00", "shipping_price": "0.00"},
+                        price_confirmed=True)
+    untouched = _create(conn, src, fields={"ram_gb": 256})
+    # Reconstruct the old persisted state, including its misleading unknown-total warning.
+    conn.execute("UPDATE configurations SET item_price=NULL, shipping_price=NULL, price_kind='unknown', "
+                 "warnings='[\"Price not confirmed for this manual configuration; total unknown\"]'::jsonb "
+                 "WHERE id=%s", (child,))
+    conn.execute("DELETE FROM schema_migrations WHERE version=8")
+    before = _row(conn, child)
+    preserved = {cid: _row(conn, cid) for cid in (src, confirmed, untouched)}
+    history = conn.execute("SELECT * FROM price_history ORDER BY id").fetchall()
+    db.migrate(conn)
+    restored = _detail(conn, child)
+    assert (restored["item_price"], restored["shipping_price"], restored["quoted_total"]) == expected
+    assert restored["offer"]["specification_price_paired"] is False and restored["match_state"] == "lead"
+    assert (restored["offer"]["kind"] == "manual_unconfirmed") is (expected[0] is not None)
+    after = _row(conn, child)
+    changed = {"item_price", "shipping_price", "quoted_total", "price_kind", "shipping_context", "warnings"}
+    assert {k: v for k, v in before.items() if k not in changed} == {
+        k: v for k, v in after.items() if k not in changed}
+    assert {cid: _row(conn, cid) for cid in preserved} == preserved
+    assert conn.execute("SELECT * FROM price_history ORDER BY id").fetchall() == history
+    assert db.migrate(conn) == []
 
 
 @requires_db

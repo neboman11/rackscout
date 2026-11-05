@@ -88,7 +88,7 @@ All listed fields always present unless noted. Unknown values null, NOT zero. Mo
  hardware_state: "confirmed"|"review"|"missing"|"damaged",
  damage: boolean|null,
  price_kind: "exact"|"base"|"range"|"unknown",
- offer: {kind:"configuration"|"historical_configuration"|"manual_configuration"|"multiple_options"|"unverified", price_is_starting:boolean, specification_price_paired:boolean, evidence:[string]},
+ offer: {kind:"configuration"|"historical_configuration"|"manual_configuration"|"manual_unconfirmed"|"multiple_options"|"unverified", price_is_starting:boolean, specification_price_paired:boolean, evidence:[string]},
  item_price: string|null,
  shipping_price: string|null,
  quoted_total: string|null,
@@ -166,7 +166,9 @@ Listing metadata adds `origin`, `revision`, `essential_states`, `next_check_afte
 
 Explicit `price_confirmed` plus a numeric price asserts that quote for this configuration. It produces offer kind `manual_configuration`, a precise price and filter eligibility without page verification. UI says manually entered/not independently verified, never browser-verified. Unknown shipping remains null; free shipping requires explicit zero. Do not silently carry shipping from another option into a newly entered configuration price.
 
-Without that assertion, keep only a clearly unpaired source starting quote or unknown price; never borrow a source exact option price for changed hardware as a paired price or invent a lower bound. Editing configuration-defining fields clears the UI price-confirmation checkbox until deliberately rechecked. Backend only honors an explicit assertion for the submitted configuration. Manual timestamps and source changes remain visible rather than overwriting the saved quote.
+Without that assertion, explicitly entered item/shipping amounts remain visible and participate in numeric sorting and price ceilings, but do not establish configuration pairing or match eligibility. A known explicit item amount produces offer kind `manual_unconfirmed`, with `price_kind=unknown`, `price_is_starting=false` and `specification_price_paired=false`; unknown kind here means unconfirmed pairing, not a missing amount. Only explicit shipping is carried into this amount; null remains unknown, zero is free. Without an entered amount, retain only an unpaired source starting quote or unknown price, never a borrowed exact option quote. Editing configuration-defining fields clears confirmation but keeps entered amounts. Clearing the item-price override clears its displayed amount. Backend only honors explicit confirmation for the submitted configuration.
+
+Migration 008 restores existing hidden explicit item/shipping amounts from unconfirmed manual metadata, only where both effective money columns were cleared. Item-only, shipping-only, explicit free shipping and cleared-item cases retain their original null/zero distinctions. It keeps price_kind unknown, source rows, manual metadata/revisions/timestamps, hardware, history and collection state unchanged. Stored unknown-total warning is corrected. It holds the collector cutover lock; old releases reject schema 008. Forward-only correction; restore the pre-upgrade backup before reverting to an older image.
 
 ### Selected-listing fetch
 

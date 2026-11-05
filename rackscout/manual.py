@@ -392,9 +392,11 @@ def _materialize(baseline: dict[str, Any], write: ManualWrite, stamps: dict[str,
             and base["item_price"] is not None:
         price_touched = False  # the unpaired source starting quote stays a starting quote
     else:
-        v["item_price"] = v["shipping_price"] = None
-        v["price_kind"] = "unknown"
-        v["shipping_context"] = "Manual configuration price not confirmed; total unknown"
+        v["item_price"], v["shipping_price"] = fields.get("item_price"), fields.get("shipping_price")
+        v["price_kind"] = "unknown"  # Amounts are known independently of configuration pairing.
+        v["shipping_context"] = ("Manually entered shipping amount; destination not confirmed; tax excluded"
+                                 if v["shipping_price"] is not None else
+                                 "Shipping not entered; total unknown (not treated as free)")
 
     # Warnings: replace exactly the domain-attributed warnings of asserted facts.
     replaced = {f for f in fields if f not in _MONEY_FIELDS}
@@ -427,7 +429,7 @@ def _materialize(baseline: dict[str, Any], write: ManualWrite, stamps: dict[str,
     if missing_blocker:
         added.append("Earlier source data recorded missing essential hardware; confirm every component to clear it")
     if price_touched and not write.price_confirmed:
-        added.append("Price not confirmed for this manual configuration; total unknown")
+        added.append("Price not confirmed for this manual configuration")
         if base["price_kind"] == "exact":
             added.append("The original option price is not paired with this manual configuration")
     elif write.price_confirmed and v["shipping_price"] is None:

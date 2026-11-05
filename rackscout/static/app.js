@@ -703,6 +703,7 @@ function offerHeadline(item) {
     case 'multiple_options': return 'Multiple options available';
     case 'unverified': return 'Configuration options unverified';
     case 'manual_configuration': return 'Price entered by you — not independently verified';
+    case 'manual_unconfirmed': return 'Price entered by you — configuration unconfirmed';
     default: return '';
   }
 }
@@ -713,6 +714,7 @@ function offerExplanation(item) {
   switch (offer.kind) {
     case 'configuration': return retailerQuote(item) ? 'Price supplied by the retailer for this native configuration option. This is a retailer quote, not a browser verification or independent hardware test. Shipping and tax may be additional.' : 'Price checked against the current listing page for this option. Hardware confidence remains field-specific; an exact price does not confirm every component is included.';
     case 'manual_configuration': return 'You entered this price for this exact configuration. It has not been checked against the current listing page and is never browser-verified. Hardware values you did not change keep their original source confidence.';
+    case 'manual_unconfirmed': return 'You entered this amount but have not confirmed that it applies to this exact configuration. It remains visible for comparison, without becoming a confirmed match, starting-price claim or independently verified quote. Shipping and tax may be additional.';
     case 'historical_configuration': return 'This exact option was captured earlier and its source quote is no longer current. Treat the price and selected option as historical.';
     case 'multiple_options': return 'The listing shows evidence of more than one hardware option. ' + price + '; which option it applies to is not verified, and this view does not list every option.';
     default: return 'The selected option is not verified. ' + price + ' and may not match the specifications listed below. This does not mean the listing offers multiple options.';
@@ -724,6 +726,7 @@ function priceAria(item) {
   const offer = offerOf(item);
   const headline = priceHeadline(item);
   if (offer.kind === 'manual_configuration') return headline + ', price entered by you, not independently verified';
+  if (offer.kind === 'manual_unconfirmed') return headline + ', price entered by you, configuration pairing unconfirmed';
   if (offer.kind === 'historical_configuration') return 'historical quote ' + headline + ', not current';
   if (offer.starting) return headline + ', starting price, configuration not verified';
   return headline;
@@ -822,6 +825,7 @@ function priceKindNote(item) {
   const offer = offerOf(item);
   if (offer.kind === 'configuration' && retailerQuote(item)) return 'Retailer configuration quote; not browser-verified';
   if (offer.kind === 'historical_configuration') return 'Historical quote for the selected option; not reverified';
+  if (offer.kind === 'manual_unconfirmed') return 'Manually entered amount; configuration price unconfirmed';
   if (item.price_kind === 'base') return 'Starting price; selected configuration unverified';
   if (item.price_kind === 'range') return 'Lowest price of a range; selected configuration unverified';
   if (item.price_kind === 'unknown') return 'Price unknown';
@@ -1737,7 +1741,7 @@ function manualSection(item) {
   facts.push(names.length ? 'Fields you set: ' + names.join(', ') + '. Every other value keeps its original source confidence.' : 'You have not changed any field; all values are the original source values.');
   facts.push(meta.price_confirmed === true
     ? 'You confirmed the item price for this configuration. It is a price entered by you, not independently verified or browser-verified.'
-    : 'You have not confirmed a price for this configuration; any price shown is an unpaired source starting quote or unknown.');
+    : 'You have not confirmed that a price applies to this configuration. Entered amounts remain visible but unpaired; source starting quotes are not confirmed configuration prices.');
   if (meta.notes) facts.push('Notes: ' + meta.notes);
   box.append(el('ul', null, facts.map(text => el('li', { text }))));
   if (meta.source_changed) {
@@ -2359,7 +2363,7 @@ function renderEditor() {
         el('label', { className: 'check editor-confirm', attrs: { for: 'ed-price_confirmed' } }, [
           box,
           el('span', { text: 'This item price applies to exactly the configuration entered above' }, [
-            el('small', { text: 'Saved as “Price entered by you”. It is not independently verified or browser-verified. Type the price yourself to confirm it; the box clears whenever RAM, CPU or other hardware fields change.', attrs: { id: 'ed-price_confirmed-help' } }),
+            el('small', { text: 'Amounts stay visible without checking this box. Checking it confirms the price applies to this exact configuration, not independent or browser verification. Type the price yourself to confirm it; hardware changes clear the box but keep your amounts.', attrs: { id: 'ed-price_confirmed-help' } }),
           ]),
         ]),
         el('div', { className: 'field-error', attrs: { id: 'ed-price_confirmed-err' } }),
