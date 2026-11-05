@@ -1,8 +1,9 @@
-"""Scheduled collector: atomic index discovery plus bounded incremental enrichment."""
+"""Scheduled collector: atomic index/catalog discovery plus bounded incremental enrichment."""
 from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
@@ -12,16 +13,22 @@ from typing import Any
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import db, domain
+from . import db, providers, retail_sources
 from .config import DESCRIPTION_HOST, EBAY_HOST, Settings
 from .sources import HttpFetcher, IndexSnapshot, SourceBlocked, SourceError
 
 log = logging.getLogger(__name__)
 
-PROVIDER = "PerUnitPrice"
+PROVIDER = providers.EBAY
+# Discovery/enrichment runs cover every enabled provider; per-source state lives in source_pages.
+RUN_PROVIDER = "all"
 INDEX_ORIGIN = "perunitprice.com"
 ARCHIVE_AFTER = timedelta(days=7)
 DESCRIPTION_REFRESH = timedelta(hours=24)
+# Listing columns ``recompute`` (and manual baseline reconstruction) build configurations from.
+RECOMPUTE_COLUMNS = "id, provider, source_record, description_claims, page_claims, page_status, quote_status"
+# Retailer native product ids: ASCII digits only (str.isdigit also accepts other Unicode digits).
+NATIVE_ID_RE = re.compile(r"[0-9]{1,20}")
 
 
 def _json(value: Any) -> Jsonb:
@@ -52,7 +59,7 @@ def _now() -> datetime:
 def start_run(conn: psycopg.Connection, kind: str) -> int:
     with conn.transaction():
         row = conn.execute(
-            "INSERT INTO source_runs (provider, kind) VALUES (%s, %s) RETURNING id", (PROVIDER, kind)
+            "INSERT INTO source_runs (provider, kind) VALUES (%s, %s) RETURNING id", (RUN_PROVIDER, kind)
         ).fetchone()
     return row["id"]
 
@@ -88,32 +95,16 @@ def set_backoff(conn: psycopg.Connection, origin: str, seconds: float, reason: s
 # ---------------------------------------------------------------------------
 
 
-def effective_page(row: dict[str, Any]) -> dict[str, Any] | None:
-    """Last successful page verification usable for the current index observation.
-
-    A page check is ignored when the index price changed since the check
-    (configuration may have changed). Otherwise the previous verification is
-    kept as evidence even when it has aged past its ``fresh_until`` window or
-    the latest attempt failed/was blocked; queries treat such evidence as
-    stale (never a match) and expose its actual verification time.
-    """
-    page = row.get("page_claims")
-    if not page or page.get("status") != "verified":
-        return None
-    if page.get("index_price_at_check") != row["source_record"].get("item_price"):
-        return None
-    return page
-
-
 def recompute(conn: psycopg.Connection, row: dict[str, Any], catalog: dict[str, dict[str, Any]], source: str) -> None:
+    """Rebuild the listing's source configurations from its stored observations. Caller owns the transaction.
+
+    ``row`` has ``RECOMPUTE_COLUMNS``. The stored observation is authoritative: native variants an
+    incomplete retailer acquisition did not see are retained in it (``providers.merge_incomplete``),
+    so every rebuild keeps them. A retailer quote's freshness and attempt status (``source_quote``)
+    never count as a revision.
+    """
     record = row["source_record"]
-    page = effective_page(row)
-    configs, listing = domain.build_configurations(
-        record, catalog.get(record.get("model") or ""), row.get("description_claims"), page
-    )
-    if page and row.get("page_status") in ("blocked", "failed"):
-        # Latest page attempt did not succeed: report it rather than the older verification.
-        listing["detail_status"] = row["page_status"]
+    configs, listing = providers.build_listing(row, catalog.get(record.get("model") or ""))
     existing = {
         r["variant_key"]: r
         for r in conn.execute(
@@ -126,17 +117,18 @@ def recompute(conn: psycopg.Connection, row: dict[str, Any], catalog: dict[str, 
     for c in configs:
         keys.append(c["variant_key"])
         params = {**c, "listing_id": row["id"], "evidence": _json(c["evidence"]), "warnings": _json(c["warnings"]),
-                  "exclusions": _json(c["exclusions"]), "essential_states": _json(c["essential_states"])}
+                  "exclusions": _json(c["exclusions"]), "essential_states": _json(c["essential_states"]),
+                  "source_quote": _json(c["source_quote"]) if c["source_quote"] is not None else None}
         cid = conn.execute(
             """INSERT INTO configurations (listing_id, variant_key, variant_id, variant_label, active, model, cpu_model, cpu_key,
                  cpu_model_state, cpu_count, cpu_count_state, total_cores, ram_gb, ram_state, drive_bays, bays_state, drive_size,
                  size_state, storage_state, storage_conf, hardware_state, damage, price_kind, item_price, shipping_price, currency,
-                 shipping_context, evidence, warnings, exclusions, essential_states, observed_at)
+                 shipping_context, evidence, warnings, exclusions, essential_states, source_quote, observed_at)
                VALUES (%(listing_id)s, %(variant_key)s, %(variant_id)s, %(variant_label)s, true, %(model)s, %(cpu_model)s, %(cpu_key)s,
                  %(cpu_model_state)s, %(cpu_count)s, %(cpu_count_state)s, %(total_cores)s, %(ram_gb)s, %(ram_state)s, %(drive_bays)s,
                  %(bays_state)s, %(drive_size)s, %(size_state)s, %(storage_state)s, %(storage_conf)s, %(hardware_state)s, %(damage)s,
                  %(price_kind)s, %(item_price)s, %(shipping_price)s, %(currency)s, %(shipping_context)s, %(evidence)s, %(warnings)s,
-                 %(exclusions)s, %(essential_states)s, now())
+                 %(exclusions)s, %(essential_states)s, %(source_quote)s, now())
                ON CONFLICT (listing_id, variant_key) DO UPDATE SET variant_id = EXCLUDED.variant_id,
                  variant_label = EXCLUDED.variant_label, active = true, model = EXCLUDED.model, cpu_model = EXCLUDED.cpu_model,
                  cpu_key = EXCLUDED.cpu_key, cpu_model_state = EXCLUDED.cpu_model_state, cpu_count = EXCLUDED.cpu_count,
@@ -147,7 +139,7 @@ def recompute(conn: psycopg.Connection, row: dict[str, Any], catalog: dict[str, 
                  price_kind = EXCLUDED.price_kind, item_price = EXCLUDED.item_price, shipping_price = EXCLUDED.shipping_price,
                  currency = EXCLUDED.currency, shipping_context = EXCLUDED.shipping_context, evidence = EXCLUDED.evidence,
                  warnings = EXCLUDED.warnings, exclusions = EXCLUDED.exclusions,
-                 essential_states = EXCLUDED.essential_states,
+                 essential_states = EXCLUDED.essential_states, source_quote = EXCLUDED.source_quote,
                  revision = configurations.revision + CASE WHEN
                    (configurations.active, configurations.variant_id, configurations.variant_label,
                     configurations.model, configurations.cpu_model, configurations.cpu_key, configurations.cpu_model_state,
@@ -203,133 +195,252 @@ def recompute(conn: psycopg.Connection, row: dict[str, Any], catalog: dict[str, 
 
 @dataclass
 class PageResult:
-    """Outcome of one vendor index page within a discovery run."""
+    """Outcome of one discovery source within a run: an eBay vendor index page or a retailer catalog."""
 
-    vendor: str
+    vendor: str | None
     url: str
-    snapshot: IndexSnapshot | None = None
+    provider: str = PROVIDER
+    snapshot: IndexSnapshot | retail_sources.CatalogSnapshot | None = None
     outcome: str | None = None  # success | partial | blocked | failed
     message: str | None = None
+    invalid: int = 0  # retailer records refused by the collector's own identity checks
+    retained: int = 0  # retailer products whose last-good observation an incomplete snapshot could not replace
+
+    @property
+    def label(self) -> str:
+        return self.vendor if self.provider == PROVIDER else providers.names()[self.provider]
+
+    @property
+    def origin(self) -> str:
+        return INDEX_ORIGIN if self.provider == PROVIDER else retail_sources.RETAILERS[self.provider].origin
+
+    @property
+    def complete(self) -> bool:
+        """Whether absence from this snapshot may archive listings or deactivate unseen variants."""
+        snapshot = self.snapshot
+        assert snapshot is not None
+        if isinstance(snapshot, IndexSnapshot):
+            return not snapshot.rejected
+        return snapshot.complete and not snapshot.rejected and not self.invalid
 
 
-def apply_page(conn: psycopg.Connection, page: PageResult, catalog: dict[str, dict[str, Any]], seen: set[str]) -> int:
-    """Upsert one vendor page's records and recompute configurations. Caller owns the transaction.
+def retail_record_problem(provider: str, rec: Any) -> str | None:
+    """Why a connector record cannot be stored as this provider's listing, else None.
 
-    Listings already applied from an earlier page in this run (``seen``) are
-    skipped so each item is attributed to exactly one index page. Returns the
-    number of such cross-page duplicates.
+    The collector never trusts a record to name another provider, a non-canonical or foreign URL,
+    a non-USD price or an observation without its quote window.
+    """
+    if not isinstance(rec, dict) or rec.get("provider") != provider:
+        return "record names a different provider"
+    item_id, url = rec.get("item_id"), rec.get("source_url")
+    if not isinstance(item_id, str) or not NATIVE_ID_RE.fullmatch(item_id):
+        return "invalid native product id"
+    retail = rec.get("retail")
+    if not isinstance(retail, dict) or not isinstance(retail.get("handle"), str):
+        return "missing retail observation"
+    origin = retail_sources.RETAILERS[provider].origin
+    if (not isinstance(url, str) or url != f"https://{origin}/products/{retail['handle']}"
+            or not retail_sources.allowed_url(provider, url)):
+        return "source URL is not this retailer's canonical product URL"
+    if rec.get("currency") != "USD":
+        return "price currency is not USD"
+    if retail.get("method") not in ("retailer_catalog", "retailer_product"):
+        return "unknown acquisition method"
+    for key in ("observed_at", "fresh_until"):
+        try:
+            stamp = datetime.fromisoformat(str(retail.get(key)))
+        except ValueError:
+            return f"invalid {key}"
+        if stamp.tzinfo is None:
+            return f"{key} lacks a timezone"
+    if not isinstance(retail.get("variants"), list) or not isinstance(rec.get("title"), str):
+        return "missing variants or title"
+    return None
+
+
+def _retail_listing_params(page: PageResult, record: dict[str, Any]) -> dict[str, Any]:
+    """Listing columns for one JSON-safe retailer observation (``source_record``)."""
+    return {
+        "provider": page.provider, "item_id": record["item_id"], "canonical_url": record["source_url"],
+        "original_url": (record.get("original_url") or record["source_url"])[:2000], "title": record["title"],
+        "condition": record.get("condition"), "model": record.get("model"), "vendor": record.get("vendor"),
+        "index_url": page.url, "record": _json(record),
+        "upstream": datetime.fromisoformat(record["retail"]["observed_at"]),
+    }
+
+
+def apply_page(conn: psycopg.Connection, page: PageResult, catalog: dict[str, dict[str, Any]],
+               seen: set[tuple[str, str]]) -> int:
+    """Upsert one source's records and recompute configurations. Caller owns the transaction.
+
+    Identities are (provider, native id). Listings already applied from an earlier eBay page in this
+    run (``seen``) are skipped so each item is attributed to exactly one index page. Returns the
+    number of such cross-page duplicates. A retailer listing's acquisition status becomes
+    ``success``. For an incomplete retailer snapshot, ``providers.merge_incomplete`` retains stored
+    native variants the snapshot did not include, or keeps the whole last-good observation when the
+    new one changed the facts those variants were built from (counted in ``page.retained``).
     """
     snapshot = page.snapshot
     assert snapshot is not None
+    retail = page.provider != PROVIDER
+    complete = page.complete
     duplicates = 0
     for rec in snapshot.records:
-        if rec["item_id"] in seen:
+        key = (page.provider, rec["item_id"])
+        if key in seen:
             duplicates += 1
             continue
-        seen.add(rec["item_id"])
-        record = _jsonable({**rec, "index_url": page.url})
+        seen.add(key)
+        if retail:
+            record = _jsonable({**rec, "index_url": page.url})
+            if not complete:
+                previous = conn.execute(
+                    "SELECT source_record, quote_status FROM listings WHERE provider = %s AND item_id = %s", key,
+                ).fetchone()
+                record, kept_last_good = providers.merge_incomplete(
+                    record, previous["source_record"] if previous else None,
+                    previous["quote_status"] if previous else None)
+                if kept_last_good:
+                    # Seen, but its last-good observation stays authoritative: nothing renewed, the latest
+                    # attempt status unchanged; only the new observation's explicit negatives applied.
+                    row = conn.execute(
+                        f"""UPDATE listings SET source_record = %s, last_seen_at = now(), archived_at = NULL,
+                              last_seen_source_at = greatest(last_seen_source_at, %s)
+                            WHERE provider = %s AND item_id = %s RETURNING {RECOMPUTE_COLUMNS}""",
+                        (_json(record), datetime.fromisoformat(rec["retail"]["observed_at"]), *key),
+                    ).fetchone()
+                    page.retained += 1
+                    recompute(conn, row, catalog, "index")
+                    continue
+            params = _retail_listing_params(page, record)
+        else:
+            params = {
+                "provider": PROVIDER, "item_id": rec["item_id"], "canonical_url": rec["source_url"],
+                "original_url": rec["original_url"], "title": rec["title"], "condition": rec["condition"],
+                "model": rec["model"], "vendor": rec.get("vendor"), "index_url": page.url,
+                "record": _json(_jsonable({**rec, "index_url": page.url})), "upstream": snapshot.updated_at,
+            }
         row = conn.execute(
-            """INSERT INTO listings (provider, item_id, canonical_url, original_url, title, condition, model, vendor,
-                 index_url, source_record, last_seen_source_at)
+            f"""INSERT INTO listings (provider, item_id, canonical_url, original_url, title, condition, model, vendor,
+                 index_url, source_record, last_seen_source_at, quote_status)
                VALUES (%(provider)s, %(item_id)s, %(canonical_url)s, %(original_url)s, %(title)s, %(condition)s, %(model)s,
-                 %(vendor)s, %(index_url)s, %(record)s, %(upstream)s)
-               ON CONFLICT (item_id) DO UPDATE SET canonical_url = EXCLUDED.canonical_url,
+                 %(vendor)s, %(index_url)s, %(record)s, %(upstream)s, %(quote_status)s)
+               ON CONFLICT (provider, item_id) DO UPDATE SET canonical_url = EXCLUDED.canonical_url,
                  original_url = EXCLUDED.original_url, title = EXCLUDED.title, model = EXCLUDED.model,
                  vendor = EXCLUDED.vendor, index_url = EXCLUDED.index_url,
                  condition = coalesce(listings.condition, EXCLUDED.condition), source_record = EXCLUDED.source_record,
                  last_seen_at = now(), last_seen_source_at = greatest(listings.last_seen_source_at, EXCLUDED.last_seen_source_at),
-                 archived_at = NULL
-               RETURNING id, source_record, description_claims, page_claims, page_status""",
-            {
-                "provider": PROVIDER, "item_id": rec["item_id"], "canonical_url": rec["source_url"],
-                "original_url": rec["original_url"], "title": rec["title"], "condition": rec["condition"],
-                "model": rec["model"], "vendor": rec.get("vendor"), "index_url": page.url, "record": _json(record),
-                "upstream": snapshot.updated_at,
-            },
+                 archived_at = NULL, quote_status = EXCLUDED.quote_status
+               RETURNING {RECOMPUTE_COLUMNS}""",
+            {**params, "quote_status": "success" if retail else None},
         ).fetchone()
         recompute(conn, row, catalog, "index")
     return duplicates
 
 
 def archive_absent(conn: psycopg.Connection, page: PageResult) -> int:
-    """Archive listings last attributed to this page and absent for 7 days of its upstream time.
+    """Archive this source's listings absent for 7 days of its snapshot time.
 
-    Runs only for complete page snapshots: when the parser rejected any record,
-    an absent listing may simply be one of the rejected rows. Listings of other
-    pages (possibly failing or stale) are never archived by this page's absence.
+    Runs only for complete snapshots: when the parser rejected any record or a retailer catalog was
+    truncated, an absent listing may simply be unseen. Listings of other pages or providers
+    (possibly failing or stale) are never archived by this source's absence.
     """
     snapshot = page.snapshot
     assert snapshot is not None
-    if snapshot.rejected:
+    if not page.complete:
         return 0
+    when = snapshot.updated_at if isinstance(snapshot, IndexSnapshot) else snapshot.observed_at
     return conn.execute(
         """UPDATE listings SET archived_at = now()
-           WHERE archived_at IS NULL AND index_url = %s AND last_seen_source_at < %s""",
-        (page.url, snapshot.updated_at - ARCHIVE_AFTER),
+           WHERE archived_at IS NULL AND provider = %s AND index_url = %s AND last_seen_source_at < %s""",
+        (page.provider, page.url, when - ARCHIVE_AFTER),
     ).rowcount
 
 
 def record_page(conn: psycopg.Connection, page: PageResult) -> None:
     snapshot = page.snapshot if page.outcome in ("success", "partial") else None
+    if snapshot is None:
+        upstream = None
+    elif isinstance(snapshot, IndexSnapshot):
+        upstream = snapshot.updated_at
+    else:
+        upstream = snapshot.upstream_updated_at  # retailer catalogs rarely state one; never the local time
     conn.execute(
-        """INSERT INTO source_pages (url, vendor, last_attempt_at, last_outcome, last_message, upstream_updated_at,
-             last_success_at, record_count)
-           VALUES (%(url)s, %(vendor)s, now(), %(outcome)s, %(message)s, %(upstream)s,
+        """INSERT INTO source_pages (url, provider, vendor, last_attempt_at, last_outcome, last_message,
+             upstream_updated_at, last_success_at, record_count)
+           VALUES (%(url)s, %(provider)s, %(vendor)s, now(), %(outcome)s, %(message)s, %(upstream)s,
              CASE WHEN %(outcome)s = 'success' THEN now() END, %(count)s)
-           ON CONFLICT (url) DO UPDATE SET vendor = EXCLUDED.vendor, last_attempt_at = now(),
-             last_outcome = EXCLUDED.last_outcome, last_message = EXCLUDED.last_message,
+           ON CONFLICT (url) DO UPDATE SET provider = EXCLUDED.provider, vendor = EXCLUDED.vendor,
+             last_attempt_at = now(), last_outcome = EXCLUDED.last_outcome, last_message = EXCLUDED.last_message,
              upstream_updated_at = coalesce(EXCLUDED.upstream_updated_at, source_pages.upstream_updated_at),
              last_success_at = coalesce(EXCLUDED.last_success_at, source_pages.last_success_at),
              record_count = coalesce(EXCLUDED.record_count, source_pages.record_count)""",
-        {"url": page.url, "vendor": page.vendor, "outcome": page.outcome,
-         "message": (page.message or None) and page.message[:500],
-         "upstream": snapshot.updated_at if snapshot else None,
+        {"url": page.url, "provider": page.provider, "vendor": page.vendor, "outcome": page.outcome,
+         "message": (page.message or None) and page.message[:500], "upstream": upstream,
          "count": len(snapshot.records) if snapshot else None},
     )
 
 
-def run_discovery(conn: psycopg.Connection, settings: Settings, fetcher: HttpFetcher) -> str:
-    """Fetch every fixed vendor index page and apply the valid ones atomically.
+def discovery_pages(settings: Settings) -> list[PageResult]:
+    """Every enabled discovery source in collection order: eBay vendor pages, then retailer catalogs."""
+    pages = [PageResult(vendor, url) for vendor, url in settings.source_pages]
+    if settings.retailers_enabled:
+        pages += [PageResult(None, r.catalog_url, key) for key, r in retail_sources.RETAILERS.items()]
+    return pages
 
-    Each page keeps its own freshness, failure state and absence archiving, so
-    a fresh page never refreshes or archives another vendor's last-good data. A
-    block stops further requests to the shared origin for this run.
+
+def _fetch_page(page: PageResult, settings: Settings, fetcher: HttpFetcher, observed: datetime) -> None:
+    """Acquire one source into ``page.snapshot``; raises SourceBlocked/SourceError."""
+    if page.provider == PROVIDER:
+        snapshot = fetcher.fetch_index(page.url, settings.max_index_bytes)
+        matching = [record for record in snapshot.records if record.get("vendor") == page.vendor]
+        mismatched = len(snapshot.records) - len(matching)
+        if mismatched:
+            if not matching:
+                raise SourceError(f"{page.vendor} page contains only other or unknown vendors")
+            snapshot = replace(snapshot, records=matching, rejected=snapshot.rejected + mismatched)
+        page.snapshot = snapshot
+        return
+    catalog = retail_sources.fetch_catalog(
+        page.provider, fetcher, observed_at=observed,
+        fresh_until=observed + timedelta(hours=settings.page_verification_hours), max_bytes=settings.max_index_bytes)
+    valid = [rec for rec in catalog.records if retail_record_problem(page.provider, rec) is None]
+    page.invalid = len(catalog.records) - len(valid)
+    page.snapshot = replace(catalog, records=valid)
+
+
+def run_discovery(conn: psycopg.Connection, settings: Settings, fetcher: HttpFetcher) -> str:
+    """Fetch every enabled discovery source and apply the valid ones atomically.
+
+    Each eBay vendor page and retailer catalog keeps its own freshness, failure state and absence
+    archiving, so a fresh source never refreshes or archives another source's last-good data. A
+    block (or an active backoff) stops requests to that origin only; other providers continue.
     """
     run_id = start_run(conn, "discovery")
-    pages = [PageResult(vendor, url) for vendor, url in settings.source_pages]
-    until = backoff_until(conn, INDEX_ORIGIN)
-    if until:
-        message = f"Backing off index origin until {until.isoformat()}"
-        with conn.transaction():
-            for page in pages:
-                page.outcome, page.message = "blocked", message
-                record_page(conn, page)
-            finish_run(conn, run_id, "blocked", message)
-        log.warning("discovery skipped: origin backoff until %s", until.isoformat())
-        return "blocked"
-
-    block: SourceBlocked | None = None
+    pages = discovery_pages(settings)
+    observed = _now()
+    stopped: dict[str, str] = {}  # origin -> reason no (further) request is made this run
+    blocks: dict[str, SourceBlocked] = {}
     for page in pages:
-        if block is not None:
-            page.outcome, page.message = "blocked", f"not requested after origin block: {block}"
+        origin = page.origin
+        if origin not in stopped and (until := backoff_until(conn, origin)) is not None:
+            stopped[origin] = f"Backing off {origin} until {until.isoformat()}"
+            log.warning("discovery skipped %s: origin backoff until %s", origin, until.isoformat())
+        if origin in stopped:
+            page.outcome, page.message = "blocked", stopped[origin]
             continue
         try:
-            snapshot = fetcher.fetch_index(page.url, settings.max_index_bytes)
-            matching = [record for record in snapshot.records if record.get("vendor") == page.vendor]
-            mismatched = len(snapshot.records) - len(matching)
-            if mismatched:
-                if not matching:
-                    raise SourceError(f"{page.vendor} page contains only other or unknown vendors")
-                snapshot = replace(snapshot, records=matching, rejected=snapshot.rejected + mismatched)
-            page.snapshot = snapshot
+            _fetch_page(page, settings, fetcher, observed)
         except SourceBlocked as exc:
-            block = exc
+            blocks[origin] = exc
+            stopped[origin] = f"not requested after origin block: {exc}"
             page.outcome, page.message = "blocked", str(exc)
         except SourceError as exc:
             page.outcome, page.message = "failed", str(exc)
-    if block is not None:
+    if blocks:
         with conn.transaction():
-            set_backoff(conn, INDEX_ORIGIN, block.retry_after or settings.recheck_cooldown_hours * 3600, str(block))
+            for origin, block in blocks.items():
+                set_backoff(conn, origin, block.retry_after or settings.recheck_cooldown_hours * 3600, str(block))
 
     catalog = db.catalog(conn)
     notes: list[str] = []
@@ -337,40 +448,47 @@ def run_discovery(conn: psycopg.Connection, settings: Settings, fetcher: HttpFet
         with conn.transaction():
             stored = {r["url"]: r["upstream_updated_at"]
                       for r in conn.execute("SELECT url, upstream_updated_at FROM source_pages").fetchall()}
-            seen: set[str] = set()
+            seen: set[tuple[str, str]] = set()
             cross_duplicates = 0
             unchanged = True
             for page in pages:
                 if page.snapshot is None:
                     continue
                 snapshot = page.snapshot
-                prev = stored.get(page.url)
-                if prev is not None and snapshot.updated_at < prev:
-                    page.outcome = "failed"
-                    page.message = (f"Upstream snapshot {snapshot.updated_at.isoformat()} older than stored "
-                                    f"{prev.isoformat()}; ignored")
-                    page.snapshot = None
-                    continue
-                unchanged = unchanged and prev is not None and snapshot.updated_at == prev
+                if isinstance(snapshot, IndexSnapshot):
+                    prev = stored.get(page.url)
+                    if prev is not None and snapshot.updated_at < prev:
+                        page.outcome = "failed"
+                        page.message = (f"Upstream snapshot {snapshot.updated_at.isoformat()} older than stored "
+                                        f"{prev.isoformat()}; ignored")
+                        page.snapshot = None
+                        continue
+                    unchanged = unchanged and prev is not None and snapshot.updated_at == prev
                 cross_duplicates += apply_page(conn, page, catalog, seen)
                 page_archived = archive_absent(conn, page)
                 detail = [f"{len(snapshot.records)} listings"]
                 if snapshot.duplicates:
                     detail.append(f"{snapshot.duplicates} duplicate item ids merged")
-                if snapshot.rejected:
-                    detail.append(f"{snapshot.rejected} invalid records rejected; absence-based archiving skipped")
+                rejected = snapshot.rejected + page.invalid
+                if rejected:
+                    detail.append(f"{rejected} invalid records rejected; absence-based archiving skipped")
+                if not isinstance(snapshot, IndexSnapshot) and not snapshot.complete:
+                    detail.append("catalog incomplete; absence-based archiving and removal of unseen variants skipped")
+                if page.retained:
+                    detail.append(f"{page.retained} products kept their last complete observation")
                 if page_archived:
                     detail.append(f"{page_archived} archived after 7 days absent")
-                page.outcome = "partial" if snapshot.rejected else "success"
+                page.outcome = "success" if page.complete else "partial"
                 page.message = "; ".join(detail)
             applied = [p for p in pages if p.snapshot is not None]
             for page in pages:
                 record_page(conn, page)
-                notes.append(f"{page.vendor}: {page.outcome if page.outcome != 'success' else 'ok'}"
+                notes.append(f"{page.label}: {page.outcome if page.outcome != 'success' else 'ok'}"
                              + (f" ({page.message})" if page.message else ""))
             if cross_duplicates:
                 notes.append(f"{cross_duplicates} listings on several vendor pages merged")
-            if applied and unchanged:
+            ebay_applied = [p for p in applied if p.provider == PROVIDER]
+            if ebay_applied and unchanged:
                 notes.append("upstream timestamp unchanged")
             if not applied:
                 outcome = "blocked" if any(p.outcome == "blocked" for p in pages) else "failed"
@@ -379,7 +497,7 @@ def run_discovery(conn: psycopg.Connection, settings: Settings, fetcher: HttpFet
             else:
                 outcome = "partial"
             finish_run(conn, run_id, outcome, "; ".join(notes),
-                       upstream=min((p.snapshot.updated_at for p in applied), default=None),
+                       upstream=min((p.snapshot.updated_at for p in ebay_applied), default=None),
                        discovered=len(seen))
     except psycopg.Error:
         log.exception("discovery snapshot transaction failed; previous inventory retained")
@@ -398,12 +516,13 @@ def run_discovery(conn: psycopg.Connection, settings: Settings, fetcher: HttpFet
 # Bounded enrichment queue. All lanes share the same eligibility (active and past
 # cooldown); target chassis are cataloged 1U models of the modern era, for every vendor.
 _CANDIDATE_COLUMNS = """
-SELECT l.id, l.item_id, l.source_record, l.description_claims, l.description_status, l.description_checked_at,
-       l.page_claims, l.page_status
+SELECT l.id, l.provider, l.item_id, l.source_record, l.description_claims, l.description_status,
+       l.description_checked_at, l.page_claims, l.page_status, l.quote_status
 FROM listings l
 LEFT JOIN server_models m ON m.model = l.model
 WHERE l.archived_at IS NULL AND l.ended_at IS NULL
   AND (l.next_check_after IS NULL OR l.next_check_after <= now())
+  AND NOT (l.provider = ANY(%(skip)s))
 """
 _TARGET = "(m.target_era AND m.rack_units = 1)"
 _PRICE = "(l.source_record->>'item_price')::numeric"
@@ -413,24 +532,28 @@ VERIFIED_TARGETS_SQL = f"""{_CANDIDATE_COLUMNS}
 ORDER BY {_PRICE} ASC NULLS LAST,
   coalesce((l.page_claims->>'fresh_until')::timestamptz, (l.page_claims->>'checked_at')::timestamptz) ASC NULLS FIRST,
   l.id ASC
-LIMIT %s
+LIMIT %(limit)s
 """
 # Lane 2: never-checked targets, cheapest first.
 NEW_TARGETS_SQL = f"""{_CANDIDATE_COLUMNS}
   AND {_TARGET} AND l.last_checked_at IS NULL
 ORDER BY {_PRICE} ASC NULLS LAST, l.first_seen_at ASC, l.id ASC
-LIMIT %s
+LIMIT %(limit)s
 """
 # Lane 3: every candidate by age of its last check (or first sighting when never checked),
 # so a stream of new cheap listings cannot starve older ones.
 OLDEST_SQL = f"""{_CANDIDATE_COLUMNS}
 ORDER BY coalesce(l.last_checked_at, l.first_seen_at) ASC, l.id ASC
-LIMIT %s
+LIMIT %(limit)s
 """
 
 
-def select_candidates(conn: psycopg.Connection, budget: int) -> list[dict[str, Any]]:
-    """Pick at most ``budget`` due listings for detail checks, deterministically.
+def select_candidates(conn: psycopg.Connection, budget: int, *,
+                      skip_providers: tuple[str, ...] = ()) -> list[dict[str, Any]]:
+    """Pick at most ``budget`` due listings of every provider for detail checks, deterministically.
+
+    One budget is shared by eBay listings and retailer products; ``skip_providers`` (disabled or
+    backing-off retailers) are never selected, so they cannot consume it.
 
     Budgets of 3+ reserve up to (budget-1)//2 slots each for due rechecks of
     verified target pages and for never-checked targets, and the rest (at least
@@ -443,12 +566,13 @@ def select_candidates(conn: psycopg.Connection, budget: int) -> list[dict[str, A
     """
     if budget <= 0:
         return []
+    params = {"limit": budget, "skip": list(skip_providers)}
     lane_quota = (budget - 1) // 2 if budget >= 3 else 1
     lanes = [
-        (conn.execute(VERIFIED_TARGETS_SQL, (budget,)).fetchall(), lane_quota),
-        (conn.execute(NEW_TARGETS_SQL, (budget,)).fetchall(), lane_quota if budget >= 2 else 0),
+        (conn.execute(VERIFIED_TARGETS_SQL, params).fetchall(), lane_quota),
+        (conn.execute(NEW_TARGETS_SQL, params).fetchall(), lane_quota if budget >= 2 else 0),
     ]
-    oldest = conn.execute(OLDEST_SQL, (budget,)).fetchall()
+    oldest = conn.execute(OLDEST_SQL, params).fetchall()
     lanes.append((oldest, budget))
     chosen: dict[int, dict[str, Any]] = {}
     for rows, quota in lanes:
@@ -467,15 +591,79 @@ def select_candidates(conn: psycopg.Connection, budget: int) -> list[dict[str, A
     return list(chosen.values())
 
 
+def enrich_retailer(conn: psycopg.Connection, settings: Settings, fetcher: HttpFetcher, cand: dict[str, Any],
+                    catalog: dict[str, dict[str, Any]], backing_off: set[str]) -> tuple[str, str | None]:
+    """Re-quote one retailer product through its own product endpoint only. Returns (outcome, message).
+
+    Outcome is ``verified`` (fresh observation applied), ``blocked`` or ``failed``. A blocked or
+    failed attempt (including unknown stock) keeps the last observed record, price, stock and quote
+    times and only marks the quote's latest attempt; a provider already backing off
+    (``backing_off``) is not requested at all and its listing is left untouched.
+    """
+    provider = cand["provider"]
+    origin = retail_sources.RETAILERS[provider].origin
+    if not settings.retailers_enabled:
+        return "failed", "retailer collection disabled"
+    if provider in backing_off or backoff_until(conn, origin) is not None:
+        backing_off.add(provider)
+        return "blocked", f"{origin} backing off; not requested"
+    observed = _now()
+    record: dict[str, Any] | None = None
+    message: str | None = None
+    try:
+        rec = retail_sources.fetch_product(
+            provider, cand["source_record"], fetcher, observed_at=observed,
+            fresh_until=observed + timedelta(hours=settings.page_verification_hours),
+            max_bytes=settings.max_description_bytes)
+        problem = retail_record_problem(provider, rec)
+        if problem is None and rec["item_id"] != cand["item_id"]:
+            problem = "product identity changed"
+        if problem:
+            raise SourceError(f"product record refused: {problem}")
+        status = "success"
+        record = _jsonable({**rec, "index_url": cand["source_record"].get("index_url")})
+    except SourceBlocked as exc:
+        status, message = "blocked", str(exc)
+        backing_off.add(provider)
+        with conn.transaction():
+            set_backoff(conn, origin, exc.retry_after or settings.recheck_cooldown_hours * 3600, str(exc))
+    except SourceError as exc:
+        status, message = "failed", str(exc)
+    cooldown = timedelta(hours=settings.recheck_cooldown_hours)
+    with conn.transaction():
+        if record is not None:
+            conn.execute(
+                """UPDATE listings SET quote_status = 'success', source_record = %(record)s, title = %(title)s,
+                     model = %(model)s, vendor = %(vendor)s, condition = coalesce(%(condition)s, condition),
+                     last_checked_at = now(), next_check_after = now() + %(cooldown)s, check_message = NULL
+                   WHERE id = %(id)s""",
+                {"record": _json(record), "title": record["title"], "model": record.get("model"),
+                 "vendor": record.get("vendor"), "condition": record.get("condition"), "cooldown": cooldown,
+                 "id": cand["id"]},
+            )
+        else:
+            conn.execute(
+                """UPDATE listings SET quote_status = %s, last_checked_at = now(), next_check_after = now() + %s,
+                     check_message = %s WHERE id = %s""",
+                (status, cooldown, (message or "")[:500] or None, cand["id"]),
+            )
+        row = conn.execute(f"SELECT {RECOMPUTE_COLUMNS} FROM listings WHERE id = %s", (cand["id"],)).fetchone()
+        recompute(conn, row, catalog, "enrichment")
+    return ("verified" if status == "success" else status), message
+
+
 def run_enrichment(conn: psycopg.Connection, settings: Settings, fetcher: HttpFetcher, max_details: int,
                    browser_enabled: bool, *, target_listing_id: int | None = None) -> str:
     if max_details <= 0:
         return "skipped"
     run_id = start_run(conn, "enrichment")
+    retail_backing_off = {key for key, r in retail_sources.RETAILERS.items() if backoff_until(conn, r.origin)}
     if target_listing_id is None:
-        candidates = select_candidates(conn, max_details)
+        skip = set(retail_sources.RETAILERS) if not settings.retailers_enabled else retail_backing_off
+        candidates = select_candidates(conn, max_details, skip_providers=tuple(sorted(skip)))
     else:
-        candidates = conn.execute(_CANDIDATE_COLUMNS + " AND l.id = %s LIMIT 1", (target_listing_id,)).fetchall()
+        candidates = conn.execute(_CANDIDATE_COLUMNS + " AND l.id = %(id)s LIMIT 1",
+                                  {"skip": [], "id": target_listing_id}).fetchall()
     conn.commit()
     catalog = db.catalog(conn)
     cooldown = timedelta(hours=settings.recheck_cooldown_hours)
@@ -484,17 +672,26 @@ def run_enrichment(conn: psycopg.Connection, settings: Settings, fetcher: HttpFe
     page_blocked = backoff_until(conn, EBAY_HOST) is not None
     browser_note = None if browser_enabled else "browser checks disabled"
     checker = None
-    if browser_enabled and not page_blocked:
+    if browser_enabled and not page_blocked and any(c["provider"] == PROVIDER for c in candidates):
         from .browser import BrowserChecker
 
         checker = BrowserChecker(settings.browser_timeout, settings.max_variants)
-    attempted = enriched = blocked = failed = 0
+    attempted = ebay_attempted = enriched = blocked = failed = 0
     try:
         for cand in candidates:
-            # Quiet gap after each listing, including cached descriptions and browser backoffs.
+            # Quiet gap after each listing of any provider, including cached descriptions and backoffs.
             if attempted:
                 time.sleep(settings.request_delay)
             attempted += 1
+            if cand["provider"] != PROVIDER:
+                result, note = enrich_retailer(conn, settings, fetcher, cand, catalog, retail_backing_off)
+                enriched += result == "verified"
+                blocked += result == "blocked"
+                failed += result == "failed"
+                if note:
+                    log.info("retailer check %s %s: %s", cand["provider"], cand["item_id"], note)
+                continue
+            ebay_attempted += 1
             item_id = cand["item_id"]
             messages: list[str] = []
             outcomes: list[str] = []
@@ -586,10 +783,7 @@ def run_enrichment(conn: psycopg.Connection, settings: Settings, fetcher: HttpFe
                      "pc": _json(page_claims) if page_claims else None, "ps": page_status, "pt": page_checked,
                      "cooldown": cooldown, "msg": "; ".join(messages)[:500] or None, "id": cand["id"]},
                 )
-                row = conn.execute(
-                    "SELECT id, source_record, description_claims, page_claims, page_status FROM listings WHERE id = %s",
-                    (cand["id"],),
-                ).fetchone()
+                row = conn.execute(f"SELECT {RECOMPUTE_COLUMNS} FROM listings WHERE id = %s", (cand["id"],)).fetchone()
                 recompute(conn, row, catalog, "enrichment")
     finally:
         if checker is not None:
@@ -601,15 +795,15 @@ def run_enrichment(conn: psycopg.Connection, settings: Settings, fetcher: HttpFe
         outcome, message = "blocked", f"{attempted} checks blocked"
     elif blocked or failed:
         outcome, message = "partial", f"{enriched} of {attempted} enriched; {blocked} blocked; {failed} with failures"
-    elif checker is None and attempted:
+    elif checker is None and ebay_attempted:
         outcome = "partial"
         message = (f"{enriched} of {attempted} seller descriptions checked; eBay page/variation verification "
                    f"not performed ({browser_note or 'eBay page origin backing off'}); prices remain base/unverified")
     else:
         outcome, message = "success", f"{enriched} of {attempted} enriched"
-    if browser_note and browser_note not in message:
+    if browser_note and ebay_attempted and browser_note not in message:
         message = f"{message}; {browser_note}"
-    if page_blocked and browser_enabled and "backing off" not in message:
+    if page_blocked and browser_enabled and ebay_attempted and "backing off" not in message:
         message = f"{message}; eBay page checks backing off"
     with conn.transaction():
         finish_run(conn, run_id, outcome, message, enriched=enriched)

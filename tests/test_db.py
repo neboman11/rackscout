@@ -126,8 +126,9 @@ class FakeFetcher:
 def settings():
     from rackscout.config import load_settings
 
-    # Fake sources never contact providers; pacing tests supply their own controlled clock.
-    return replace(load_settings(), request_delay=0.0)
+    # Fake sources never contact providers; pacing tests supply their own controlled clock. Retailer
+    # discovery is disabled so these controlled eBay-source tests never reach the retailer connector.
+    return replace(load_settings(), request_delay=0.0, retailers_enabled=False)
 
 
 TRAP = ("187634883092", "Dell PowerEdge R640 1U 8SFF Server Barebones 2x Gold 6150 64GB H730 2x 750w", "268.88", "0.00", "2× Gold 6150", 64)
@@ -145,11 +146,11 @@ def verified_page(checked_at, *, price_at_check="268.88", variations=TRAP_VARIAT
             "fresh_until": (checked_at + timedelta(hours=fresh_hours)).isoformat()}
 
 
-def recompute_listing(conn, item_id):
+def recompute_listing(conn, item_id, provider="PerUnitPrice"):
     from rackscout import collector, db
 
-    row = conn.execute("SELECT id, source_record, description_claims, page_claims, page_status FROM listings WHERE item_id = %s",
-                       (item_id,)).fetchone()
+    row = conn.execute(f"SELECT {collector.RECOMPUTE_COLUMNS} FROM listings WHERE provider = %s AND item_id = %s",
+                       (provider, item_id)).fetchone()
     collector.recompute(conn, row, db.catalog(conn), "test")
     conn.commit()
 
@@ -214,7 +215,7 @@ def test_base_price_title_ram_is_lead_and_verified_variant_is_match(conn):
         "UPDATE listings SET page_status = 'verified', page_claims = %s WHERE item_id = %s",
         (collector._json(verified_page(datetime.now(timezone.utc))), TRAP[0]),
     )
-    row = conn.execute("SELECT id, source_record, description_claims, page_claims, page_status FROM listings WHERE item_id = %s",
+    row = conn.execute(f"SELECT {collector.RECOMPUTE_COLUMNS} FROM listings WHERE item_id = %s",
                        (TRAP[0],)).fetchone()
     collector.recompute(conn, row, db.catalog(conn), "test")
     conn.commit()

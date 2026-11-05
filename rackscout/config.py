@@ -2,7 +2,9 @@
 
 Database settings come from ``DATABASE_URL`` or the standard libpq ``PG*``
 variables. Discovery reads a fixed set of allowlisted PerUnitPrice vendor
-index pages; configuration never selects an arbitrary host. The optional
+index pages and, unless ``RACKSCOUT_RETAILERS_ENABLED=false``, the fixed US
+retailer catalogs of ``rackscout.retail_sources``; configuration never selects
+an arbitrary host. The optional
 benchmark dataset is an external private file and is never bundled.
 """
 from __future__ import annotations
@@ -121,6 +123,8 @@ class Settings:
     refresh_cooldown_seconds: int = 3600
     # Exact browser origins allowed to save manual configurations; independent of collection.
     edit_origins: tuple[str, ...] = ()
+    # Discover and refresh the fixed US retailer catalogs (rackscout.retail_sources) besides eBay.
+    retailers_enabled: bool = True
 
 
 def load_settings() -> Settings:
@@ -147,6 +151,7 @@ def load_settings() -> Settings:
         refresh_origins=_origins("RACKSCOUT_REFRESH_ORIGINS"),
         refresh_cooldown_seconds=_int("RACKSCOUT_REFRESH_COOLDOWN_SECONDS", 3600, 60, 7 * 24 * 3600),
         edit_origins=_origins("RACKSCOUT_EDIT_ORIGINS"),
+        retailers_enabled=_bool("RACKSCOUT_RETAILERS_ENABLED", True),
     )
 
 

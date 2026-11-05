@@ -5,6 +5,7 @@
 // ---------------------------------------------------------------------------
 
 const DEFAULTS = {
+  provider: [],
   vendor: '',
   model: [],
   generation: '',
@@ -30,6 +31,12 @@ const CHECK_KEYS = ['diskless', 'hide_damaged', 'modern_only', 'confirmed_only',
 
 // Used only when /api/facets is unavailable; the backend facets are authoritative.
 const FALLBACK_VENDORS = ['Dell', 'HPE', 'Supermicro', 'Lenovo', 'Cisco'];
+const FALLBACK_PROVIDERS = [
+  { id: 'PerUnitPrice', name: 'eBay (PerUnitPrice)' },
+  { id: 'TechMikeNY', name: 'TechMikeNY' },
+  { id: 'SaveMyServer', name: 'SaveMyServer' },
+  { id: 'CloudNinjas', name: 'Cloud Ninjas' },
+];
 const FALLBACK_MODEL_VENDORS = {
   R240: 'Dell', R340: 'Dell', R440: 'Dell', R640: 'Dell', R6415: 'Dell',
   'HPE DL360 Gen10': 'HPE', 'HPE DL160 Gen10': 'HPE', 'HPE DL325 Gen10': 'HPE',
@@ -39,6 +46,7 @@ const FALLBACK_MODEL_VENDORS = {
 };
 const GENERATION_PREFIX = { HPE: 'Gen', Supermicro: 'X', Lenovo: 'Generation ', Cisco: 'M' };
 let facetData = {
+  providers: FALLBACK_PROVIDERS,
   vendors: FALLBACK_VENDORS,
   models: Object.keys(FALLBACK_MODEL_VENDORS),
   model_vendors: FALLBACK_MODEL_VENDORS,
@@ -176,9 +184,16 @@ function safeUrl(value, hosts, pathPattern) {
   return url.href;
 }
 
-function safeEbayUrl(value) {
-  return safeUrl(value, ['www.ebay.com', 'ebay.com'], /^\/itm\/(?:[^/]+\/)?\d+\/?$/)
+function safeSourceUrl(value) {
+  const ebay = safeUrl(value, ['www.ebay.com', 'ebay.com'], /^\/itm\/(?:[^/]+\/)?\d+\/?$/)
     || safeUrl(value, ['itm.ebaydesc.com'], /^\/itmdesc\/\d+\/?$/);
+  if (ebay) return ebay;
+  const retail = safeUrl(value, ['techmikeny.com', 'savemyserver.com', 'cloudninjas.com'], /^\/products\/[a-z0-9][a-z0-9_-]{0,254}\/?$/);
+  if (!retail) return null;
+  const url = new URL(retail);
+  if ([...url.searchParams].some(([key, val]) => key !== 'variant' || !/^\d{1,20}$/.test(val))) return null;
+  url.hash = '';
+  return url.href;
 }
 
 function safeBenchmarkUrl(value) {
@@ -233,7 +248,7 @@ function readStateFromUrl() {
   const params = new URLSearchParams(window.location.search);
   const next = { ...DEFAULTS };
   for (const key of Object.keys(DEFAULTS)) {
-    if (key !== 'model' && params.has(key)) next[key] = params.get(key);
+    if (!['model', 'provider'].includes(key) && params.has(key)) next[key] = params.get(key);
   }
   for (const key of CHECK_KEYS) {
     next[key] = next[key] === 'false' ? 'false' : next[key] === 'true' ? 'true' : DEFAULTS[key];
@@ -248,6 +263,7 @@ function readStateFromUrl() {
   }
   next.q = next.q.slice(0, 200);
   next.model = normalizeModels(params.getAll('model'));
+  next.provider = normalizeProviders(params.getAll('provider'));
   if (!next.vendor) next.generation = '';
   if (next.max_total !== '' && !MAX_TOTAL_PATTERN.test(next.max_total)) next.max_total = '';
   return next;
@@ -264,12 +280,22 @@ function normalizeModels(values) {
   return [...seen];
 }
 
+function normalizeProviders(values) {
+  const allowed = new Set(FALLBACK_PROVIDERS.map(provider => provider.id));
+  return [...new Set(values.map(value => String(value).trim()).filter(value => allowed.has(value)))];
+}
+
+function providerName(provider) {
+  const source = (facetData.providers || FALLBACK_PROVIDERS).find(entry => entry.id === provider);
+  return source ? source.name : provider || 'Unknown platform';
+}
+
 function buildParams(includePage) {
   const params = new URLSearchParams();
   for (const key of Object.keys(DEFAULTS)) {
     if (key === 'page') continue;
-    if (key === 'model') {
-      for (const name of state.model) params.append('model', name);
+    if (key === 'model' || key === 'provider') {
+      for (const name of state[key]) params.append(key, name);
       continue;
     }
     params.set(key, state[key]);
@@ -296,6 +322,33 @@ function ensureOption(select, value) {
   if (![...select.options].some(option => option.value === value)) {
     select.append(el('option', { text: value, attrs: { value } }));
   }
+}
+
+function selectedProviders() {
+  return [...$('provider-options').querySelectorAll('input[type="checkbox"]:checked')].map(box => box.value);
+}
+
+function updateProviderSummary() {
+  const selected = selectedProviders();
+  $('provider-count').textContent = selected.length ? plural(selected.length, 'platform', 'platforms') + ' selected' : 'All US platforms';
+  $('provider-names').textContent = selected.map(providerName).join(', ');
+  $('provider-clear').disabled = selected.length === 0;
+}
+
+function fillProviders(selected) {
+  const choices = facetData.providers || FALLBACK_PROVIDERS;
+  $('provider-options').replaceChildren(
+    el('legend', { className: 'sr-only', text: 'Selling platforms' }),
+    ...choices.map((provider, index) => {
+      const id = 'provider-opt-' + index;
+      const box = el('input', { attrs: { type: 'checkbox', id, value: provider.id } });
+      box.checked = selected.includes(provider.id);
+      return el('label', { className: 'multi-option', attrs: { for: id } }, [
+        box, el('span', { text: provider.name }),
+      ]);
+    }),
+  );
+  updateProviderSummary();
 }
 
 function selectedModels() {
@@ -350,6 +403,7 @@ function fillVendors(value) {
 }
 
 function applyStateToForm() {
+  fillProviders(state.provider);
   fillVendors(state.vendor);
   rebuildDependents(state.vendor, state.model, state.generation);
   for (const key of SELECT_KEYS) {
@@ -374,6 +428,7 @@ function showMaxTotalError(message) {
 function readFormIntoState() {
   for (const key of SELECT_KEYS) state[key] = $(key).value;
   state.model = selectedModels();
+  state.provider = selectedProviders();
   for (const key of CHECK_KEYS) state[key] = $(key).checked ? 'true' : 'false';
   state.q = $('q').value.trim().slice(0, 200);
   state.sort = $('sort').value;
@@ -391,6 +446,7 @@ function onFilterChanged(event) {
   window.clearTimeout(debounceTimer);
   if (event.target.id === 'vendor') rebuildDependents($('vendor').value, [], '');
   if (event.target.closest && event.target.closest('#model-options')) updateModelSummary();
+  if (event.target.closest && event.target.closest('#provider-options')) updateProviderSummary();
   const typing = event.target.matches('input[type="text"], input[type="search"]');
   debounceTimer = window.setTimeout(() => {
     const previousPage = state.page;
@@ -404,7 +460,7 @@ function onFilterChanged(event) {
 
 function resetFilters() {
   window.clearTimeout(debounceTimer);
-  state = { ...DEFAULTS, model: [] };
+  state = { ...DEFAULTS, model: [], provider: [] };
   applyStateToForm();
   pushUrl();
   loadListings();
@@ -531,7 +587,7 @@ function buildRow(item) {
       'aria-label': 'View ' + (item.origin === 'manual' ? 'manual configuration ' : '') + modelTitle(item) + ', RAM ' + ramDisplay(item) + ', ' + storageLabel(item) + ', ' + priceAria(item),
     },
   });
-  const seller = [item.seller || 'Unknown seller', item.rack_units == null ? 'height unknown' : item.rack_units + 'U', item.condition || 'condition unknown'].join(' · ');
+  const seller = [item.platform || providerName(item.provider || 'PerUnitPrice'), item.rack_units == null ? 'height unknown' : item.rack_units + 'U', item.condition || 'condition unknown'].join(' · ');
 
   const cpuCell = el('td', null, [
     document.createTextNode(item.cpu_model ? (item.cpu_count == null ? '?' : item.cpu_count) + '× ' + item.cpu_model : 'CPU unknown'),
@@ -592,8 +648,13 @@ function priceText(item, value) {
   return offerOf(item).starting ? money + '+' : money;
 }
 
+function retailerQuote(item) {
+  return !!item.quote && ['retailer_catalog', 'retailer_product'].includes(item.quote.method);
+}
+
 function offerHeadline(item) {
   switch (offerOf(item).kind) {
+    case 'configuration': return retailerQuote(item) ? 'Retailer configuration quote' : '';
     case 'historical_configuration': return 'Historical quote — not current';
     case 'multiple_options': return 'Multiple options available';
     case 'unverified': return 'Configuration options unverified';
@@ -606,9 +667,9 @@ function offerExplanation(item) {
   const offer = offerOf(item);
   const price = offer.starting ? 'The price shown is a starting price' : 'The price shown';
   switch (offer.kind) {
-    case 'configuration': return 'Price checked against the current listing page for this option. Hardware confidence remains field-specific; an exact price does not confirm every component is included.';
+    case 'configuration': return retailerQuote(item) ? 'Price supplied by the retailer for this native configuration option. This is a retailer quote, not a browser verification or independent hardware test. Shipping and tax may be additional.' : 'Price checked against the current listing page for this option. Hardware confidence remains field-specific; an exact price does not confirm every component is included.';
     case 'manual_configuration': return 'You entered this price for this exact configuration. It has not been checked against the current listing page and is never browser-verified. Hardware values you did not change keep their original source confidence.';
-    case 'historical_configuration': return 'This exact option was captured earlier and the page has not been reverified. Treat the price and selected option as historical, not a current quote.';
+    case 'historical_configuration': return 'This exact option was captured earlier and its source quote is no longer current. Treat the price and selected option as historical.';
     case 'multiple_options': return 'The listing shows evidence of more than one hardware option. ' + price + '; which option it applies to is not verified, and this view does not list every option.';
     default: return 'The selected option is not verified. ' + price + ' and may not match the specifications listed below. This does not mean the listing offers multiple options.';
   }
@@ -719,6 +780,7 @@ function hardwareCell(item) {
 
 function priceKindNote(item) {
   const offer = offerOf(item);
+  if (offer.kind === 'configuration' && retailerQuote(item)) return 'Retailer configuration quote; not browser-verified';
   if (offer.kind === 'historical_configuration') return 'Historical quote for the selected option; not reverified';
   if (item.price_kind === 'base') return 'Starting price; selected configuration unverified';
   if (item.price_kind === 'range') return 'Lowest price of a range; selected configuration unverified';
@@ -758,6 +820,9 @@ function priceCell(item) {
 
 function applyFacets(facets) {
   const next = { ...facetData };
+  if (Array.isArray(facets.providers)) {
+    next.providers = facets.providers.filter(provider => provider && typeof provider.name === 'string' && FALLBACK_PROVIDERS.some(known => known.id === provider.id));
+  }
   if (Array.isArray(facets.vendors) && facets.vendors.length) next.vendors = facets.vendors;
   if (Array.isArray(facets.models)) next.models = facets.models;
   if (facets.model_vendors && typeof facets.model_vendors === 'object') next.model_vendors = facets.model_vendors;
@@ -772,6 +837,7 @@ async function loadFacets() {
     const facets = await fetchJson('/api/facets');
     applyFacets(facets);
     const vendor = $('vendor').value;
+    fillProviders(selectedProviders());
     fillVendors(vendor);
     rebuildDependents(vendor, selectedModels(), $('generation').value);
   } catch (error) {
@@ -831,11 +897,12 @@ function renderStatus(status) {
     children.push(el('p', { className: 'err', text: 'Data is stale: the upstream index or last successful run is older than expected. Listings may no longer be available.' }));
   }
   children.push(el('ul', null, [runLine('Discovery', status.discovery), runLine('Enrichment', status.enrichment)]));
-  const vendors = Array.isArray(status.sources) ? status.sources.filter(v => v && typeof v === 'object' && v.vendor) : [];
+  const vendors = Array.isArray(status.sources) ? status.sources.filter(v => v && typeof v === 'object' && (v.provider || v.vendor)) : [];
   if (vendors.length) {
-    children.push(el('p', { className: 'subtle', text: 'Per-vendor source pages' }));
+    children.push(el('p', { className: 'subtle', text: 'Selling platforms and source pages' }));
     children.push(el('ul', null, vendors.map(v => {
-      const parts = [v.vendor + ': ' + (STATE_LABELS[v.state] || 'unknown')];
+      const sourceName = (v.platform || providerName(v.provider || 'PerUnitPrice')) + (v.vendor ? ' / ' + v.vendor : '');
+      const parts = [sourceName + ': ' + (STATE_LABELS[v.state] || 'unknown')];
       const ok = formatDate(v.last_success_at);
       parts.push(ok ? 'last success ' + ok : 'no successful collection');
       const upd = formatDate(v.source_updated_at);
@@ -851,15 +918,15 @@ function renderStatus(status) {
   if (provider) children.push(el('p', { text: provider }));
   body.replaceChildren(...children);
 
-  if (status.coverage) $('coverage-note').textContent = status.coverage + '. Shipping quotes come from the index and their destination is unconfirmed.';
+  if (status.coverage) $('coverage-note').textContent = status.coverage + '. USD only; shipping and tax may be additional and delivery quotes are destination-dependent.';
 
   const problems = [];
   if (status.stale) problems.push('listing data is stale');
   for (const [name, run] of [['discovery', status.discovery], ['enrichment', status.enrichment]]) {
     if (run && ['failed', 'blocked', 'partial'].includes(run.state)) problems.push(name + ' ' + STATE_LABELS[run.state]);
   }
-  const badVendors = vendors.filter(v => ['failed', 'blocked', 'partial', 'never'].includes(v.state) || v.stale).map(v => v.vendor + ' ' + (v.stale && v.state === 'success' ? 'stale' : STATE_LABELS[v.state] || 'unknown'));
-  if (badVendors.length) problems.push('vendor data: ' + badVendors.join(', '));
+  const badVendors = vendors.filter(v => ['failed', 'blocked', 'partial', 'never'].includes(v.state) || v.stale).map(v => (v.platform || providerName(v.provider || 'PerUnitPrice')) + (v.vendor ? ' / ' + v.vendor : '') + ' ' + (v.stale && v.state === 'success' ? 'stale' : STATE_LABELS[v.state] || 'unknown'));
+  if (badVendors.length) problems.push('source data: ' + badVendors.join(', '));
   setStatusWarning(problems.length ? 'Collection warning: ' + problems.join('; ') + '. Listings shown may be incomplete or outdated.' : '');
   const bad = problems.length > 0;
   const dot = $('status-dot');
@@ -933,7 +1000,7 @@ function refreshMessageText(info) {
   const when = formatDate(info.finished_at);
   const server = info.message ? ' ' + info.message : '';
   const selected = info.scope === 'listing';
-  const target = info.target_item_id ? 'listing ' + info.target_item_id : 'the selected listing';
+  const target = info.target_item_id ? providerName(info.target_provider || 'PerUnitPrice') + ' listing ' + info.target_item_id : 'the selected listing';
   if (!info.enabled) return 'Manual refresh is disabled on this server. Data is still collected automatically once a day at 04:00 UTC.' + server;
   if (info.state === 'queued') {
     if (selected) return 'Fetch queued for ' + target + ' only, not the whole inventory. This page will update when it finishes.' + server;
@@ -1266,13 +1333,17 @@ function renderDetail(item) {
   dlRow(list, 'Generation', item.generation_label || (item.vendor && item.generation != null ? generationLabel(item.vendor, item.generation) : 'Unknown'));
   dlRow(list, 'Platform era', item.target_era === true ? 'Dell 14G-era or newer comparable' : item.target_era === false ? 'Older than the target era' : 'Unknown');
   dlRow(list, 'Condition', item.condition || 'Unknown');
-  dlRow(list, 'Seller', item.seller || 'Unknown');
+  dlRow(list, 'Selling platform', item.platform || providerName(item.provider || 'PerUnitPrice'));
   dlRow(list, 'Detail check', detailStatusLabel(item.detail_status));
-  dlRow(list, 'Source updated', formatDate(item.source_updated_at) || 'Unknown');
+  dlRow(list, item.provider && item.provider !== 'PerUnitPrice' ? 'Source observation' : 'Source updated', formatDate(item.source_updated_at) || 'Unknown');
   dlRow(list, 'Last seen', formatDate(item.last_seen_at) || 'Unknown');
   dlRow(list, 'Last detail attempt', formatDate(item.last_checked_at) || 'Never');
   if (item.origin === 'manual') {
     dlRow(list, 'Price verification', offerOf(item).kind === 'manual_configuration' ? 'Entered by you; not independently verified or browser-verified' : 'No price confirmed by you');
+  } else if (item.provider && item.provider !== 'PerUnitPrice') {
+    dlRow(list, 'Retailer quote', retailerQuote(item) ? item.quote.current ? 'Recent retailer quote; not browser-verified' : 'Historical or unsuccessful; not a current quote' : 'No configuration quote captured');
+    dlRow(list, 'Quote observed', formatDate(item.quote && item.quote.observed_at) || 'Never');
+    dlRow(list, 'Quote expires', formatDate(item.quote && item.quote.fresh_until) || 'Unknown');
   } else {
     dlRow(list, 'Page verification', item.page_verification_current ? 'Current' : item.page_verified_at ? 'Not current — historical evidence only' : 'Never verified');
     dlRow(list, 'Page last verified', formatDate(item.page_verified_at) || 'Never');
@@ -1287,7 +1358,7 @@ function renderDetail(item) {
   nodes.push(evidenceSection(item));
   if (item.origin === 'manual' && view && view.manual && view.manual.original) nodes.push(originalSection(view.manual.original));
 
-  const href = safeEbayUrl(item.source_url);
+  const href = safeSourceUrl(item.source_url);
   if (href) {
     const link = externalLink(href, 'Open source listing ↗');
     link.className = 'source-link';
@@ -1366,7 +1437,7 @@ function evidenceSection(item) {
       el('span', { className: 'ev-state', text: entry.field + ' · ' + state + ':' }),
       document.createTextNode(entry.text),
     ]);
-    const href = safeEbayUrl(entry.source_url);
+    const href = safeSourceUrl(entry.source_url);
     if (href) li.append(document.createTextNode(' '), externalLink(href, '(source)'));
     list.append(li);
   }
@@ -2443,6 +2514,22 @@ function init() {
     updateModelSummary();
     $('model-picker').querySelector('summary').focus();
     onFilterChanged(event);
+  });
+  $('provider-clear').addEventListener('click', event => {
+    for (const box of $('provider-options').querySelectorAll('input:checked')) box.checked = false;
+    updateProviderSummary();
+    $('provider-picker').querySelector('summary').focus();
+    onFilterChanged(event);
+  });
+  document.addEventListener('click', event => {
+    const picker = $('provider-picker');
+    if (picker.open && !picker.contains(event.target)) picker.open = false;
+  });
+  $('provider-picker').addEventListener('keydown', event => {
+    if (event.key === 'Escape' && $('provider-picker').open) {
+      $('provider-picker').open = false;
+      $('provider-picker').querySelector('summary').focus();
+    }
   });
   document.addEventListener('click', event => {
     const picker = $('model-picker');

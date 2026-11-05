@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
-from . import cpu_specs, db, manual, queries, refresh
+from . import cpu_specs, db, manual, providers, queries, refresh
 from .config import load_settings
 from .domain import SUPPORTED_VENDORS, normalize_vendor
 
@@ -23,6 +23,7 @@ log = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 +\-]{0,59}")
 MAX_MODELS = 100
+MAX_PROVIDERS = 20
 REFRESH_PATH = "/api/refresh"
 MAX_REFRESH_BODY = 1024
 MAX_EDIT_BODY = 32768
@@ -112,6 +113,7 @@ def _bool(name: str, raw: str | None, default: bool) -> bool:
 
 
 def parse_filters(
+    provider: Annotated[list[str] | None, Query(max_length=MAX_PROVIDERS)] = None,
     vendor: str | None = None,
     model: Annotated[list[str] | None, Query(max_length=MAX_MODELS)] = None,
     generation: str | None = None,
@@ -131,6 +133,18 @@ def parse_filters(
     page: str | None = None,
     page_size: str | None = None,
 ) -> queries.Filters:
+    if provider is not None and len(provider) > MAX_PROVIDERS:
+        raise HTTPException(status_code=422, detail=f"at most {MAX_PROVIDERS} provider values may be supplied")
+    known = providers.names()
+    selected: list[str] = []
+    for raw_provider in provider or []:
+        value = raw_provider.strip()
+        if not value:
+            continue
+        if value not in known:
+            raise HTTPException(status_code=422, detail=f"provider must be one of {', '.join(known)}")
+        if value not in selected:
+            selected.append(value)
     vendor_raw = (vendor or "").strip()
     vendor_name = normalize_vendor(vendor_raw) if vendor_raw else None
     if vendor_raw and vendor_name is None:
@@ -166,6 +180,7 @@ def parse_filters(
         raise HTTPException(status_code=422, detail="sort must be price, ram, bays or benchmark")
     text = (q or "").strip() or None
     return queries.Filters(
+        providers=tuple(selected),
         vendor=vendor_name,
         models=tuple(models),
         generation=gen,
@@ -239,7 +254,7 @@ def facets(conn: Conn) -> dict[str, Any]:
 
 @app.get("/api/status")
 def status(conn: Conn) -> dict[str, Any]:
-    return queries.status(conn)
+    return queries.status(conn, retailers=_settings.retailers_enabled)
 
 
 @app.get(REFRESH_PATH)

@@ -5,15 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
 <title>RackScout — used rack server finder</title>
-<link rel="stylesheet" href="/static/app.css?v=0.7.1">
-<script src="/static/app.js?v=0.7.1" defer></script>
+<link rel="stylesheet" href="/static/app.css?v=0.8.0">
+<script src="/static/app.js?v=0.8.0" defer></script>
 </head>
 <body>
 <a href="#inventory" class="sr-only">Skip to inventory</a>
 <header>
   <div class="brand"><span class="mark" aria-hidden="true"><i></i><i></i><i></i></span>RackScout <small>Secondhand hardware. First-class filters.</small></div>
 </header>
-<div class="notice" role="note"><strong>Indexed coverage</strong><span id="coverage-note">US eBay Buy It Now index; not exhaustive. Shipping quotes come from the index and their destination is unconfirmed.</span></div>
+<div class="notice" role="note"><strong>Indexed coverage</strong><span id="coverage-note">US eBay listings and US-based retailer catalogs; not exhaustive. USD only; shipping and tax may be additional.</span></div>
 <div id="status-warning" class="banner warn" role="status" hidden></div>
 <main>
   <div class="heading">
@@ -42,6 +42,17 @@
     <aside class="filters" aria-label="Inventory filters">
       <div class="filter-head"><h2>Filters</h2><button class="linkbutton" id="reset" type="button">Reset</button></div>
       <form id="filters" class="filter-fields">
+        <div class="field" id="provider-field">
+          <span id="provider-label">Selling platform</span>
+          <details class="multi" id="provider-picker">
+            <summary aria-describedby="provider-help"><span class="multi-count" id="provider-count">All US platforms</span><span class="multi-names" id="provider-names"></span></summary>
+            <div class="multi-panel">
+              <button type="button" class="linkbutton" id="provider-clear" disabled>Clear platform selection</button>
+              <fieldset class="multi-options" id="provider-options" aria-labelledby="provider-label"></fieldset>
+            </div>
+          </details>
+          <small id="provider-help" class="field-help">US-based sellers only. Tick one or more; none ticked means all platforms.</small>
+        </div>
         <label class="field"><span>Vendor</span><select id="vendor"><option value="">All vendors</option><option>Dell</option><option>HPE</option><option>Supermicro</option><option>Lenovo</option><option>Cisco</option></select></label>
         <div class="field" id="model-field">
           <span id="model-label">Model</span>
@@ -99,7 +110,7 @@
           </select>
         </label>
       </div>
-      <div class="search"><label for="q" class="sr-only">Search model, CPU or seller</label><input id="q" type="search" maxlength="200" placeholder="Search model, CPU or seller…" autocomplete="off"></div>
+      <div class="search"><label for="q" class="sr-only">Search model, CPU or listing title</label><input id="q" type="search" maxlength="200" placeholder="Search model, CPU or listing title…" autocomplete="off"></div>
       <div id="loading" class="loading" role="status" hidden>Loading listings…</div>
       <div id="error" class="banner error" role="alert" hidden><span id="error-text"></span><button type="button" class="close" id="retry">Retry</button></div>
       <div id="results">
@@ -107,7 +118,7 @@
           <table id="table">
             <caption class="sr-only">Server listings grouped into matches and unverified leads. Totals are item plus quoted shipping, tax excluded. Benchmarks are per-CPU PassMark reference averages, not scores measured on these listings.</caption>
             <thead><tr>
-              <th scope="col">Server / Seller</th>
+              <th scope="col">Server / Platform</th>
               <th scope="col">CPU</th>
               <th scope="col">Populated</th>
               <th scope="col" id="th-benchmark">CPU Mark / CPU</th>
@@ -142,7 +153,7 @@
   <div class="dialog-head"><h2 id="detail-title" tabindex="-1">Listing details</h2><button class="close" id="close" type="button" autofocus>Close</button></div>
   <div id="detail-notice" class="detail-notice" role="status" aria-live="polite" hidden></div>
   <div class="dialog-body" id="detail-body"></div>
-  <div class="dialog-foot">Index-derived record, not a current availability check. A seller claim is not an independent hardware test. Manual configurations are values you entered; they are never browser-verified.</div>
+  <div class="dialog-foot">Confirm availability and delivery with the selling platform. Hardware claims are not independent tests. Retailer quotes are not browser verification; manual configurations are values you entered.</div>
 </dialog>
 </body>
 </html>

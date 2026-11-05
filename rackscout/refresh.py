@@ -52,9 +52,11 @@ ACTIVE = ("queued", "running")
 QUEUE_TIMEOUT = "10s"
 INTERRUPTED_MESSAGE = "Refresh interrupted before completion (worker stopped); not retried automatically"
 
-# ``target_item_id`` is a bounded primary-key lookup; no URL is ever exposed.
+# ``target_item_id``/``target_provider`` are bounded primary-key lookups (a native id is unique only per
+# provider); no URL is ever exposed.
 _COLUMNS = """state, request_id, requested_at, started_at, finished_at, message, target_listing_id,
     (SELECT l.item_id FROM listings l WHERE l.id = refresh_control.target_listing_id) AS target_item_id,
+    (SELECT l.provider FROM listings l WHERE l.id = refresh_control.target_listing_id) AS target_provider,
     now() AS db_now"""
 _SELECT = f"SELECT {_COLUMNS} FROM refresh_control WHERE id = 1"
 _MARK_INTERRUPTED = f"""UPDATE refresh_control SET state = 'failed', finished_at = now(), message = %s, updated_at = now()
@@ -119,7 +121,8 @@ def collector_running(conn: psycopg.Connection) -> bool:
 
 def _status(row: dict[str, Any] | None, now: datetime, running: bool, settings: Settings) -> dict[str, Any]:
     row = row or {"state": "idle", "request_id": None, "requested_at": None, "started_at": None,
-                  "finished_at": None, "message": None, "target_listing_id": None, "target_item_id": None}
+                  "finished_at": None, "message": None, "target_listing_id": None, "target_item_id": None,
+                  "target_provider": None}
     retry_at: datetime | None = None
     retry_after = 0
     if row["requested_at"] is not None:
@@ -141,6 +144,7 @@ def _status(row: dict[str, Any] | None, now: datetime, running: bool, settings: 
         "message": row["message"],
         "scope": "all" if row["target_listing_id"] is None else "listing",
         "target_item_id": row["target_item_id"] if row["target_listing_id"] is not None else None,
+        "target_provider": row["target_provider"] if row["target_listing_id"] is not None else None,
     }
 
 

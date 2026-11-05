@@ -829,24 +829,54 @@ def interpret_variant(labels: dict[str, str]) -> VariantFacts:
     return facts
 
 
+# Retailer installed-configuration text: one claim per line, " | " item or sentence.
+RETAIL_SEGMENT_RE = re.compile(r"[\r\n]+|\s+\|\s+|\.\s+(?=[A-Z])")
+
+
+def _retail_claims(retail: dict[str, Any]) -> dict[str, Any] | None:
+    """Claims stated by the retailer as the installed configuration (never capacity or option text)."""
+    text = retail.get("installed_text") or ""
+    segments = [s for s in RETAIL_SEGMENT_RE.split(text) if s and s.strip()]
+    if not segments:
+        return None
+    return summarize_claims(extract_claims(segments, contextual=True))
+
+
 def build_configurations(
     record: dict[str, Any],
     catalog: dict[str, Any] | None,
     description: dict[str, Any] | None,
     page: dict[str, Any] | None,
+    *,
+    retail_status: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Return (configurations, listing_updates) for one marketplace listing.
+    """Return (configurations, listing_updates) for one marketplace listing or retailer product.
 
     ``record`` is the normalized index record (JSON-safe; decimals as str).
     ``description`` is a stored ``parse_description`` result plus metadata.
     ``page`` is a stored eBay page check result.
+
+    ``retail_status`` (latest retailer acquisition outcome) selects retailer mode: ``record`` is a
+    normalized retailer observation with its ``retail`` dict, ``description``/``page`` must be None,
+    hardware claims come from the retailer's explicit installed-configuration text and native
+    variants, and only a concrete preconfigured variant with its own numeric quote is an exact price.
     """
+    retail: dict[str, Any] | None = None
+    if retail_status is not None:
+        retail = record.get("retail")
+        if not isinstance(retail, dict) or description is not None or page is not None:
+            raise ValueError("retailer configurations need a retail observation and no eBay description/page")
     item_url = record["source_url"]
-    index_url = record.get("index_url")  # vendor index page this observation came from
-    desc_url = f"https://itm.ebaydesc.com/itmdesc/{record['item_id']}"
+    index_url = record.get("index_url")  # vendor index page or retailer catalog this observation came from
+    # Retailer claims are cited to the retailer's own product page.
+    desc_url = item_url if retail is not None else f"https://itm.ebaydesc.com/itmdesc/{record['item_id']}"
+    source_name = "Retailer listing" if retail is not None else "Index"
     title = record["title"]
     title_claims = parse_title(title)
-    desc = description if description and description.get("status") == "verified" else None
+    if retail is not None:
+        desc = _retail_claims(retail)
+    else:
+        desc = description if description and description.get("status") == "verified" else None
     page_ok = page if page and page.get("status") == "verified" else None
 
     model = record.get("model")
@@ -858,13 +888,30 @@ def build_configurations(
     # override can replace exactly the warnings of the facts it asserts (``warning_fields``).
     warnings: list[tuple[str, str]] = []
     price_kind = "base"
-    shipping_context = (
-        "Index shipping quote; destination not confirmed; tax excluded"
-        if base_ship is not None
-        else "Shipping not quoted by index; total unknown"
-    )
+    if retail is not None:
+        shipping_context = (
+            "Retailer shipping quote; destination not confirmed; tax excluded"
+            if base_ship is not None
+            else "Shipping not quoted by retailer; total unknown"
+        )
+    else:
+        shipping_context = (
+            "Index shipping quote; destination not confirmed; tax excluded"
+            if base_ship is not None
+            else "Shipping not quoted by index; total unknown"
+        )
     variants: list[dict[str, Any]] = []
-    if page_ok:
+    if retail is not None:
+        # Only actually available native variants are offers; unavailable variants, quote-only and
+        # unavailable products yield no configuration (existing rows are deactivated by the caller).
+        if retail.get("kind") != "quote_only" and retail.get("available") is True:
+            variants = [
+                {"variant_id": str(v["variant_id"]), "labels": dict(v.get("labels") or {}), "price": v.get("price"),
+                 "label": clean_text(v["label"], 200) if isinstance(v.get("label"), str) and v["label"].strip() else None,
+                 "paired": v.get("paired") is True and retail.get("kind") == "configured"}
+                for v in retail.get("variants") or [] if v.get("available") is True
+            ]
+    elif page_ok:
         if page_ok.get("has_variations"):
             variants = page_ok.get("variations") or []
             price_kind = "range" if page_ok.get("price_kind") == "range" else "base"
@@ -921,9 +968,9 @@ def build_configurations(
                 if c is not None:
                     counts.append((c, "title", title, item_url))
             if idx_model:
-                models.append((idx_model, "index", f"Index CPU field: {record.get('cpu_raw')}", index_url))
+                models.append((idx_model, "index", f"{source_name} CPU field: {record.get('cpu_raw')}", index_url))
             if idx_count is not None:
-                counts.append((idx_count, "index", f"Index CPU field: {record.get('cpu_raw')}", index_url))
+                counts.append((idx_count, "index", f"{source_name} CPU field: {record.get('cpu_raw')}", index_url))
         if not models:
             model_res = Resolved(None, "unknown", [_ev("cpu_model", "unknown", "No CPU model stated", None)])
         else:
@@ -961,9 +1008,9 @@ def build_configurations(
             for claim in title_claims["ram_claims"]:
                 candidates.append((claim["value"], "title", title, item_url))
         if record.get("no_ram_flag"):
-            candidates.append((0, "index", "Index flag: No RAM", index_url))
+            candidates.append((0, "index", f"{source_name} flag: No RAM", index_url))
         elif record.get("source_ram_gb") is not None:
-            candidates.append((record["source_ram_gb"], "index", f"Index RAM field: {record['source_ram_gb']}GB", index_url))
+            candidates.append((record["source_ram_gb"], "index", f"{source_name} RAM field: {record['source_ram_gb']}GB", index_url))
         res = _resolve_numeric("ram_gb", candidates, exact)
         if res.state == "inferred" and not exact and res.value:
             res.evidence.append(_ev("ram_gb", "inferred", "Title/index RAM may describe a different variation than the listed base price", item_url))
@@ -1122,7 +1169,10 @@ def build_configurations(
     cosmetic = (desc or {}).get("cosmetic_text")
 
     def build(variant: dict[str, Any] | None) -> dict[str, Any]:
-        exact = price_kind == "exact" or variant is not None
+        # A retailer variant pairs its price with its hardware only as a concrete preconfigured option.
+        paired = variant is not None and variant.get("price") is not None and (
+            retail is None or variant.get("paired") is True)
+        exact = (price_kind == "exact" or variant is not None) if retail is None else paired
         labels = (variant or {}).get("labels") or {}
         facts = interpret_variant(labels)
         cpu_model, cpu_count = cpu_resolution(facts, exact)
@@ -1145,7 +1195,7 @@ def build_configurations(
 
         item_price = Decimal(variant["price"]) if variant and variant.get("price") is not None else base_price
         ship = base_ship
-        kind = "exact" if variant and variant.get("price") is not None else price_kind
+        kind = "exact" if paired else price_kind
         if item_price is None:
             kind = "unknown"
         # Only the explicitly paired index CPU/count can qualify its core total.
@@ -1160,8 +1210,11 @@ def build_configurations(
                 total_cores = record["total_cores"]
 
         tagged: list[tuple[str, str]] = list(warnings) + [("variant", w) for w in facts.warnings]
-        if variant is not None:
+        if paired:
             tagged = [(f, w) for f, w in tagged if not w.startswith("Index starting price")]
+        elif retail is not None:
+            tagged.insert(0, ("price", "Retailer starting/base price; the configuration actually ordered is not "
+                                       "priced by this quote"))
         if ram.state == "conflicting":
             tagged.append(("ram_gb", "RAM claims conflict; the lowest stated amount is used and cannot satisfy a confirmed match"))
         if ram.value == 0:
@@ -1202,12 +1255,17 @@ def build_configurations(
             cpu_model.evidence + cpu_count.evidence + ram.evidence + bay_res.evidence + size_res.evidence
             + storage.evidence + ess_evidence
         )
+        if retail is not None:
+            price_text = (f"Retailer quote {item_price} for this preconfigured option" if kind == "exact" else
+                          f"Retailer starting/base price {item_price}; configuration-specific price not quoted")
+        else:
+            price_text = (f"Selected variation price {item_price}" if variant else
+                          f"eBay page price {item_price}" if kind == "exact" else
+                          f"{'Page range' if kind == 'range' else 'Index/base'} price {item_price}; selected configuration not verified")
         evidence.append(_ev("price", "confirmed" if kind == "exact" else "inferred" if kind in ("base", "range") else "unknown",
-                            (f"Selected variation price {item_price}" if variant else
-                             f"eBay page price {item_price}" if kind == "exact" else
-                             f"{'Page range' if kind == 'range' else 'Index/base'} price {item_price}; selected configuration not verified"),
-                            item_url if variant or kind == "exact" else index_url))
-        evidence.append(_ev("shipping", "inferred" if ship is not None else "unknown", shipping_context, item_url if page_ok else index_url))
+                            price_text, item_url if variant or kind == "exact" or retail is not None else index_url))
+        evidence.append(_ev("shipping", "inferred" if ship is not None else "unknown", shipping_context,
+                            item_url if page_ok or retail is not None else index_url))
         if exclusions:
             evidence.append(_ev("accessories", "confirmed", "; ".join(exclusions), desc_url if desc and desc.get("exclusions") else item_url))
         if damage_text:
@@ -1215,7 +1273,9 @@ def build_configurations(
         return {
             "variant_key": (variant or {}).get("variant_id") or "",
             "variant_id": (variant or {}).get("variant_id"),
-            "variant_label": ", ".join(f"{k}: {v}" for k, v in labels.items()) or None,
+            # Hardware labels when named; otherwise the retailer's own native option title (display only,
+            # never interpreted as installed hardware).
+            "variant_label": ", ".join(f"{k}: {v}" for k, v in labels.items()) or (variant or {}).get("label"),
             "model": model,
             "cpu_model": cpu_model.value,
             "cpu_key": normalize_cpu_key(cpu_model.value),
@@ -1247,14 +1307,18 @@ def build_configurations(
             "warning_fields": warning_fields,
         }
 
-    if variants:
+    if variants or retail is not None:
         configs = [build(v) for v in variants]
     else:
         configs = [build(None)]
 
     detail_status = "never"
     statuses = [s for s in ((description or {}).get("status"), (page or {}).get("status")) if s]
-    if page_ok:
+    if retail is not None:
+        # A retailer product endpoint observation is a source detail check, never a page verification.
+        detail_status = {"blocked": "blocked", "failed": "failed"}.get(
+            retail_status, "partial" if retail.get("method") == "retailer_product" else "never")
+    elif page_ok:
         detail_status = "verified"
     elif "verified" in statuses:
         detail_status = "partial"

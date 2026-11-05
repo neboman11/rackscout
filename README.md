@@ -12,13 +12,13 @@ Discovery covers Dell, HPE/HP, Supermicro, Lenovo and Cisco. Defaults are 1U, at
 
 The platform-era filter selects cataloged Dell 14G-era or newer hardware across vendors. Vendor generations are not interchangeable: HPE Gen10 is not Dell 10G, and Supermicro X11 is not a Dell generation. Select a vendor before selecting a generation. Disable the modern-platform filter to inspect older or unknown-era discoveries.
 
-The Model picker accepts multiple selections: a listing may match any selected model while still satisfying the other filters. Clear all model selections to remove that constraint. Shared URLs retain every selection as repeated `model` parameters.
+The Model and Selling platform pickers accept multiple selections. Each selection group is ORed, then ANDed with the other filters. Clear a group to remove that constraint. Shared URLs retain repeated `model` and `provider` parameters. Selling platform is independent of the server's OEM.
 
 Catalog metadata establishes only cited chassis properties: vendor, generation, rack height and socket capacity. It never proves installed CPU count, RAM, bay backplane or PSU inclusion. Generic Supermicro motherboard/chassis descriptions do not establish a complete system model. Unknown values remain unknown.
 
 ## Source coverage and trust
 
-The collector uses the complete embedded payloads from PerUnitPrice's five fixed vendor pages:
+The eBay connector uses the complete embedded payloads from PerUnitPrice's five fixed vendor pages:
 
 - https://perunitprice.com/servers/dell/
 - https://perunitprice.com/servers/hpe/
@@ -28,15 +28,25 @@ The collector uses the complete embedded payloads from PerUnitPrice's five fixed
 
 The combined `/servers/` page truncates its payload, so it is not used as a complete inventory. Vendor results are deduplicated by marketplace item ID. A failed, wrong-vendor or incomplete vendor fetch cannot archive that vendor's last-good listings or make its data fresh merely because another vendor succeeded. Mixed-system Supermicro lots remain unknown rather than inheriting one system's chassis metadata.
 
-Coverage is US-located eBay US Buy It Now inventory that ships within the US, with the publisher's own exclusions. This is **not an exhaustive eBay scanner**. No eBay API key or developer account is required.
+eBay coverage is US-located eBay US Buy It Now inventory that ships within the US, with the publisher's own exclusions. This is **not an exhaustive eBay scanner**. No eBay API key or developer account is required.
 
 Seller descriptions and bounded browser checks add evidence. No CAPTCHA solving, proxy rotation, user login or unsandboxed browser fallback. A challenge, source schema change or failed check is not empty inventory or proof that an item sold.
+
+Additional US-based retailers use fixed public endpoints, not marketplace-page scraping:
+
+- [TechMikeNY](https://techmikeny.com/llms.txt): documented agent API, `/api/agent/collections/servers` and product-by-handle lookups.
+- [SaveMyServer](https://savemyserver.com/collections/pre-configured-servers): public preconfigured-server catalog and individual product JSON.
+- [Cloud Ninjas](https://cloudninjas.com/collections/cloud-ninjas-servers): public server catalog and individual product JSON.
+
+Retailer currency must be explicitly confirmed as USD. Unknown shipping stays unknown. Public Shopify product data may require its documented `.js` product endpoint to confirm stock; identity and price must agree with the USD quote. Missing stock data is not treated as sold or in stock. Requests use the same paced transport and origin backoff; a blocked source never triggers a bypass. Source status reports failures independently.
+
+Native retailer variants retain their own prices and published option labels. Exact prices require explicit installed CPU/RAM facts for that native configuration. Chassis, builders, platform maximums, quote-only products and unexplained options never become complete-server deals at a minimum price. Merchant observations are labelled retailer quotes, **not browser verification**. ServerMonkey is not integrated: its public endpoints rejected access. Non-US retailers and currency conversion are excluded.
 
 Title RAM and starting prices are not verified configuration pairs. A listing titled 64GB can price its no-RAM option. Unverified/base-price leads are separate from matching configurations. Explicit missing operating essentials exclude a configuration; generic “tested” wording does not manufacture positive assertions for every component.
 
 Configuration rows distinguish captured option prices from starting prices. Base/range quotes show **$XXX+**; advertised RAM is labelled **Listed** and is not promised at that price. Positive evidence of hardware choices produces **Multiple options available**; otherwise the row says **Configuration options unverified**, not that multiple options definitely exist. Open a row for the evidence and original server specifications.
 
-Captured options keep separate rows with their option labels and individual prices. An expired exact quote is labelled historical, never presented as a current verified price or a starting-price lower bound. With browser checks disabled, RackScout cannot reliably enumerate current marketplace options; it keeps one unresolved listing rather than inventing configuration/price pairs. This presentation uses already-stored evidence and adds no scraping.
+Captured options keep separate rows with their option labels and individual prices. An expired exact quote is labelled historical, never presented as a current verified price or a starting-price lower bound. With browser checks disabled, RackScout cannot reliably enumerate current eBay options; public retailer APIs can still provide native options. No combinations are synthesized from independent option lists.
 
 UI releases version the JavaScript and stylesheet URLs in `rackscout/static/index.html` alongside the package version, so existing browsers do not mix cached assets from older releases. Reload the page after an upgrade.
 
@@ -57,6 +67,8 @@ Entries survive automatic collection. Recorded dates and source-change warnings 
 Manual writes require the exact-origin allowlist `RACKSCOUT_EDIT_ORIGINS`, independently of collection permissions. For local development, use `http://localhost:8080,http://127.0.0.1:8080`; an empty value disables editing. Compose forwards this optional setting to the web service. Apartment enables it through `manualEditing.enabled`. All permitted private-LAN clients share the same saved entries; this is not per-user authentication.
 
 **Fetch seller details** requests enrichment of that listing only, without fetching vendor index pages. It shares the global one-hour manual-refresh cooldown, six-hour listing cooldown, request pacing, description cache and source backoff. A queued worker performs the request; the web process does not scrape. Results can be cached, partial or blocked, and never overwrite manual configurations. Browser-disabled fetching can add seller-described specifications, but cannot reliably enumerate marketplace option prices.
+
+For a retailer row, this action refreshes only that retailer's product endpoint, not its catalog or eBay. A failed or blocked attempt retains the last good specifications/prices and their original observation times. Incomplete catalogs cannot remove unseen products or options; if common hardware facts changed, the last complete product observation stays authoritative until a complete replacement arrives.
 
 
 ## Local development
@@ -115,7 +127,7 @@ An unset dataset path leaves existing database references unchanged; a fresh dat
 `Dockerfile` uses the Playwright 1.64.1 Python image matching the pinned dependency. The runtime is non-root; production workloads use a read-only root filesystem, writable temporary storage, no Kubernetes API token and no-new-privileges. No host credentials or Docker socket are mounted.
 
 ```sh
-podman build -t localhost/rackscout:0.7.1 .
+podman build -t localhost/rackscout:0.8.0 .
 ```
 
 `compose.yaml` provides PostgreSQL, migration, web and on-demand collection. Export a strong `POSTGRES_PASSWORD` before starting it. Web binds to localhost.
@@ -133,11 +145,12 @@ GitHub Actions runs the PostgreSQL-backed suite before publishing an image tagge
 
 Automatic collection runs once daily at **04:00 UTC** (`0 4 * * *`). The **Refresh data** button queues an additional collection using the same server-detail budget, source backoff and global collector lock. Manual requests have a one-hour cooldown; repeated clicks cannot create overlapping collections. Versioned migrations preserve inventory and history.
 
-- `RACKSCOUT_MAX_DETAILS`: bounded description/page checks per run; default 25.
+- `RACKSCOUT_MAX_DETAILS`: one shared budget across eBay and retailers; default 25 listing-detail checks per run.
 - `RACKSCOUT_REQUEST_DELAY`: quiet gap between listing detail checks and minimum per-origin HTTP request spacing; default 6 seconds.
 - `RACKSCOUT_BROWSER_ENABLED`: browser verification switch; default true.
+- `RACKSCOUT_RETAILERS_ENABLED`: enable the three fixed US retailer catalogs/product lookups; default true. Stored inventory is not deleted when disabled.
 - `RACKSCOUT_RECHECK_COOLDOWN_HOURS`: minimum interval between detail attempts; default 6.
-- `RACKSCOUT_PAGE_VERIFICATION_HOURS`: successful page-verification lifetime; default 12, not shorter than the cooldown. Allow room for the cron interval too.
+- `RACKSCOUT_PAGE_VERIFICATION_HOURS`: successful eBay verification or retailer-quote lifetime; default 12, not shorter than the cooldown. With daily collection, exact quotes become historical for part of each day unless refreshed.
 - `RACKSCOUT_BENCHMARKS_FILE`: optional privately provisioned reference JSON file.
 - `RACKSCOUT_REFRESH_ORIGINS`: exact comma-separated origins allowed to request manual collection; empty disables manual requests.
 - `RACKSCOUT_REFRESH_COOLDOWN_SECONDS`: persisted manual-request cooldown; default 3600 seconds.
@@ -151,7 +164,7 @@ At the default budget, up to 12 checks go to cheap previously verified target sy
 
 At six seconds, detail processing has at least a six-second quiet gap after each listing, even when its description is cached or a browser source is backing off. That caps listing throughput around ten per minute; network/processing time makes it slower. Browser subresources are not a ten-HTTP-requests-per-minute guarantee. The 25-listing budget and daily schedule are unchanged, and challenges/Retry-After still take precedence. Slower collection cannot guarantee that a provider will not restrict access.
 
-Source freshness is separate from local fetch time. Re-fetching an unchanged old snapshot does not make it fresh. Valid-source disappearance is not confirmed sold; absence-based archival requires seven days and a complete applicable vendor snapshot. Price history is retained for 90 days.
+eBay source freshness uses the publisher's snapshot time, not local fetch time. Retailer catalog freshness uses the latest successful local observation because these APIs do not provide a catalog snapshot timestamp; quote times remain separate. Valid-source disappearance is not confirmed sold; absence-based archival requires seven days and a complete applicable source snapshot. Price history is retained for 90 days.
 
 Manual refresh and editing are intended only for a trusted private LAN. Origin/header checks protect against browser cross-site requests, not untrusted clients that forge headers. Do not expose these controls publicly without authentication. Daily collection reduces request volume, not the risk of provider restrictions or the need for permission. Source freshness/verification expiry remain explicit; the daily schedule does not make old data current.
 
@@ -179,3 +192,5 @@ Private benchmark references are supplied through the existing Secret named by `
 Deploy only a published immutable image reference. Verify `/ready`, collection Job logs, each vendor's freshness/status, actual database inventory, real filters/details and the private route. Never delete existing cluster PVCs to recover this app.
 
 Upgrading from a release without manual-row collector guards requires a clean cutover. The chart uses Recreate for web/worker; drain old-image CronJob collectors too before enabling manual writes. Do not let an old collector run against newly created manual rows.
+
+Release 0.8.0 migration 006 changes source identity to `(provider, item_id)` and preserves existing listing/configuration IDs, manual entries and history. It takes the collector lock before the cutover. Drain old collectors, retain Recreate, back up PostgreSQL, and migrate before starting the new release. Old releases reject the new schema; do not roll back to an old image after migration without a deliberate database recovery plan.

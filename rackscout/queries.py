@@ -15,9 +15,10 @@ from typing import Any
 
 import psycopg
 
-from . import cpu_specs
+from . import cpu_specs, providers
 from .config import VENDOR_INDEX_URLS
 from .domain import SUPPORTED_VENDORS
+from .retail_sources import RETAILERS
 
 SORTS = {
     "price": "(quoted_total IS NULL) ASC, quoted_total ASC, item_price ASC NULLS LAST",
@@ -28,7 +29,7 @@ SORTS = {
 
 # A stored eBay page verification applies to the current index observation only
 # when the index price is unchanged since the check (same rule as
-# collector.effective_page). It is *current* only while its stored verification
+# providers.effective_page). It is *current* only while its stored verification
 # window (``fresh_until``, written by the collector as check time +
 # RACKSCOUT_PAGE_VERIFICATION_HOURS) is open and the latest page attempt
 # succeeded. Legacy verifications without a stored window conservatively count
@@ -40,18 +41,25 @@ PAGE_APPLIES_SQL = (
     " AND (l.page_claims->>'index_price_at_check') IS NOT DISTINCT FROM (l.source_record->>'item_price'))"
 )
 PAGE_CURRENT_SQL = (
-    f"coalesce(l.page_status = 'verified' AND {PAGE_APPLIES_SQL} AND coalesce("
+    f"coalesce(l.provider = '{providers.EBAY}' AND l.page_status = 'verified' AND {PAGE_APPLIES_SQL} AND coalesce("
     "(l.page_claims->>'fresh_until')::timestamptz, "
     f"(l.page_claims->>'checked_at')::timestamptz + interval '{LEGACY_PAGE_FRESH_HOURS} hours') > now(), false)"
 )
+# A retailer quote (never a page verification) is current only while its stored observation window
+# (``fresh_until``, minted at acquisition) is open and its latest acquisition attempt succeeded.
+QUOTE_CURRENT_SQL = (
+    "coalesce(c.source_quote->>'status' = 'success'"
+    " AND (c.source_quote->>'fresh_until')::timestamptz > now(), false)"
+)
 
 # Manual configurations: a price is paired with the configuration only through an explicit user assertion
-# (never browser verification). Browser/page verification applies to source rows only.
+# (never browser verification). Page verification and retailer quotes apply to source rows only.
 MANUAL_PRICE_PAIRED_SQL = (
     "(c.origin = 'manual' AND c.price_kind = 'exact' AND (c.manual_data->>'price_confirmed') = 'true')"
 )
 PRICE_PAIRED_SQL = (
-    f"({MANUAL_PRICE_PAIRED_SQL} OR (c.origin = 'source' AND c.price_kind = 'exact' AND {PAGE_CURRENT_SQL}))"
+    f"({MANUAL_PRICE_PAIRED_SQL} OR (c.origin = 'source' AND c.price_kind = 'exact' AND "
+    f"CASE WHEN l.provider = '{providers.EBAY}' THEN {PAGE_CURRENT_SQL} ELSE {QUOTE_CURRENT_SQL} END))"
 )
 # A source configuration with an active manual child is replaced by its children in inventory,
 # whether or not those children pass the filters (applied before filtering, counting and paging).
@@ -69,16 +77,23 @@ c.origin, c.revision, c.cpu_model_state, c.essential_states, c.manual_data, c.ma
 c.source_configuration_id, src.revision AS source_revision, src.active AS source_active,
 (c.origin = 'manual' AND (src.active IS NOT TRUE
   OR src.revision IS DISTINCT FROM (c.manual_data->'baseline'->>'source_revision')::integer)) AS source_changed,
-l.item_id, l.title, l.seller, l.condition, l.canonical_url, l.last_seen_source_at, l.last_seen_at,
+l.item_id, l.provider, l.title, l.seller, l.condition, l.canonical_url, l.last_seen_source_at, l.last_seen_at,
 l.last_checked_at, l.next_check_after, l.detail_status, l.page_status, l.vendor,
-CASE WHEN c.origin = 'source' THEN l.page_checked_at END AS page_checked_at,
-CASE WHEN c.origin = 'source' AND l.page_claims->>'status' = 'verified'
+c.source_quote, (c.origin = 'source' AND c.source_quote IS NOT NULL AND {QUOTE_CURRENT_SQL}) AS quote_current,
+CASE WHEN c.origin = 'source' AND l.provider <> '{providers.EBAY}' THEN
+  (SELECT count(*) FROM configurations o WHERE o.listing_id = c.listing_id AND o.origin = 'source' AND o.active)
+END AS retail_options,
+CASE WHEN c.origin = 'source' AND l.provider = '{providers.EBAY}' THEN l.page_checked_at END AS page_checked_at,
+CASE WHEN c.origin = 'source' AND l.provider = '{providers.EBAY}' AND l.page_claims->>'status' = 'verified'
      THEN (l.page_claims->>'checked_at')::timestamptz END AS page_verified_at,
-(c.origin = 'source' AND coalesce({PAGE_APPLIES_SQL}, false)) AS page_applies,
+(c.origin = 'source' AND l.provider = '{providers.EBAY}' AND coalesce({PAGE_APPLIES_SQL}, false)) AS page_applies,
 (c.origin = 'source' AND {PAGE_CURRENT_SQL}) AS page_current,
-coalesce(c.origin = 'source' AND (l.page_claims->>'status' = 'verified')
+coalesce(c.origin = 'source' AND l.provider = '{providers.EBAY}' AND (l.page_claims->>'status' = 'verified')
          AND (l.page_claims->>'has_variations') = 'true', false) AS page_has_variations,
-CASE WHEN l.description_claims->>'status' = 'verified' THEN l.description_claims->>'text_excerpt' END AS description_text,
+CASE WHEN l.provider = '{providers.EBAY}' AND l.description_claims->>'status' = 'verified'
+       THEN l.description_claims->>'text_excerpt'
+     WHEN l.provider <> '{providers.EBAY}' THEN left(l.source_record->'retail'->>'description_text', 1500)
+END AS description_text,
 m.generation, m.generation_label, m.target_era, m.rack_units, m.socket_capacity,
 b.cpu_mark, b.single_thread, b.samples, b.version AS bench_version, b.scope AS bench_scope,
 b.source_url AS bench_url, b.retrieved_at AS bench_retrieved_at
@@ -96,6 +111,9 @@ WHERE c.active AND l.archived_at IS NULL AND l.ended_at IS NULL AND c.currency =
 
 @dataclass(frozen=True)
 class Filters:
+    # Selected provider keys (``providers.names()``), OR-combined; empty means every provider. Manual rows
+    # belong to their listing's provider. Validated and deduplicated by the API layer.
+    providers: tuple[str, ...] = ()
     vendor: str | None = None
     # Selected chassis models, OR-combined; empty means unconstrained. Deduplicated by the API layer.
     models: tuple[str, ...] = ()
@@ -136,6 +154,9 @@ def build_predicates(f: Filters) -> tuple[list[str], list[str], list[str], dict[
     if f.vendor:
         hard.append("l.vendor = %(vendor)s")
         p["vendor"] = f.vendor
+    if f.providers:
+        hard.append("l.provider = ANY(%(providers)s)")
+        p["providers"] = list(f.providers)
     if f.models:
         hard.append("c.model = ANY(%(models)s)")
         p["models"] = list(f.models)
@@ -266,6 +287,14 @@ def _warnings(r: dict[str, Any]) -> list[str]:
             reason = "no successful recheck within the verification window"
         warnings.insert(0, f"eBay page last verified {when}; {reason}; "
                            "current price, configuration and availability not reverified")
+    quote = r["source_quote"] if r["origin"] == "source" else None
+    if quote and r["price_kind"] == "exact" and not r["quote_current"]:
+        if quote.get("status") != "success":
+            reason = f"latest retailer check {quote.get('status')}"
+        else:
+            reason = "observation window ended without a newer observation"
+        warnings.insert(0, f"Retailer quote last observed {quote.get('observed_at')}; {reason}; "
+                           "current price, configuration and availability not reconfirmed")
     if r["origin"] == "manual" and r["source_changed"]:
         if not r["source_active"]:
             warnings.insert(0, "Original source configuration is no longer listed; manual values kept unchanged")
@@ -315,12 +344,14 @@ def _offer(r: dict[str, Any]) -> dict[str, Any]:
         return {"kind": "manual_configuration", "price_is_starting": False, "specification_price_paired": True,
                 "evidence": [_MANUAL_PRICE_EVIDENCE]}
     if price_kind == "exact":
-        current = bool(r["page_current"])
+        current = bool(r["page_current"] if r["provider"] == providers.EBAY else r["quote_current"])
         return {"kind": "configuration" if current else "historical_configuration",
                 "price_is_starting": False, "specification_price_paired": current, "evidence": []}
     evidence: list[str] = []
     if r["page_has_variations"] and r["page_current"]:
         evidence.append("eBay page lists selectable variations")
+    if (r["retail_options"] or 0) >= 2:
+        evidence.append(f"Retailer lists {r['retail_options']} purchasable native options for this product")
     evidence += _choice_evidence("Title", r["title"])
     evidence += _choice_evidence("Description", r["description_text"])
     return {"kind": "multiple_options" if evidence else "unverified",
@@ -368,6 +399,27 @@ def _cpu_reference(r: dict[str, Any]) -> tuple[dict[str, Any] | None, int | None
     return match, match["cores_per_cpu"] * count
 
 
+_VARIANT_ID_RE = re.compile(r"[0-9]{1,20}")
+
+
+def _source_url(r: dict[str, Any]) -> str:
+    """eBay item link, or the retailer's canonical product link selecting the native variant when known."""
+    url = r["canonical_url"]
+    if r["provider"] != providers.EBAY and r["origin"] == "source" and _VARIANT_ID_RE.fullmatch(r["variant_id"] or ""):
+        return f"{url}?variant={r['variant_id']}"
+    return url
+
+
+def _quote(r: dict[str, Any]) -> dict[str, Any] | None:
+    """Retailer quote provenance of a source row (never an eBay page verification); None otherwise."""
+    quote = r["source_quote"] if r["origin"] == "source" else None
+    if not quote:
+        return None
+    return {"method": quote.get("method"), "observed_at": quote.get("observed_at"),
+            "fresh_until": quote.get("fresh_until"), "current": bool(r["quote_current"]),
+            "status": quote.get("status")}
+
+
 def serialize(r: dict[str, Any], match_state: str) -> dict[str, Any]:
     benchmark = None
     cpu_spec, inferred_total_cores = _cpu_reference(r)
@@ -384,6 +436,8 @@ def serialize(r: dict[str, Any], match_state: str) -> dict[str, Any]:
     return {
         "id": r["id"],
         "item_id": r["item_id"],
+        "provider": r["provider"],
+        "platform": providers.names().get(r["provider"], r["provider"]),
         "variant_id": r["variant_id"],
         "variant_label": r["variant_label"],
         "title": r["title"],
@@ -415,7 +469,7 @@ def serialize(r: dict[str, Any], match_state: str) -> dict[str, Any]:
         "currency": r["currency"],
         "shipping_context": r["shipping_context"],
         "match_state": match_state,
-        "source_url": r["canonical_url"],
+        "source_url": _source_url(r),
         "source_updated_at": _iso(r["last_seen_source_at"]),
         "last_seen_at": _iso(r["last_seen_at"]),
         "last_checked_at": _iso(r["last_checked_at"]),
@@ -424,6 +478,7 @@ def serialize(r: dict[str, Any], match_state: str) -> dict[str, Any]:
         "page_verified_at": _iso(r["page_verified_at"]),
         "page_checked_at": _iso(r["page_checked_at"]),
         "page_verification_current": bool(r["page_current"]),
+        "quote": _quote(r),
         "evidence": r["evidence"] or [],
         "warnings": _warnings(r),
         "exclusions": r["exclusions"] or [],
@@ -464,6 +519,7 @@ def facets(conn: psycopg.Connection) -> dict[str, Any]:
         "generations": sorted({g for gens in generations_by_vendor.values() for g in gens}),
         "drive_sizes": ["SFF", "LFF"],
         "vendors": list(SUPPORTED_VENDORS),
+        "providers": [{"id": key, "name": name} for key, name in providers.names().items()],
         "model_vendors": dict(sorted(model_vendors.items())),
         "generations_by_vendor": generations_by_vendor,
         "generation_labels": {v: {g: " / ".join(sorted(n)) for g, n in by_gen.items()} for v, by_gen in labels.items()},
@@ -472,10 +528,16 @@ def facets(conn: psycopg.Connection) -> dict[str, Any]:
 
 STALE_AFTER_HOURS = 8
 COVERAGE = ("US eBay Buy It Now listings indexed by PerUnitPrice for Dell, HPE, Supermicro, Lenovo and Cisco "
-            "rack servers; not exhaustive")
+            "rack servers, plus the public server catalogs of the US retailers TechMikeNY, SaveMyServer and "
+            "Cloud Ninjas when enabled; not exhaustive")
 
 
-def status(conn: psycopg.Connection) -> dict[str, Any]:
+def status(conn: psycopg.Connection, *, retailers: bool = True) -> dict[str, Any]:
+    """Collection status: aggregate runs plus one entry per source (eBay vendor page or retailer catalog).
+
+    ``retailers`` lists the retailer catalogs (collection enabled). Every entry carries its own
+    provider-local state, freshness and inventory count, so a failing source never hides another.
+    """
     def last(kind: str) -> dict[str, Any]:
         row = conn.execute(
             """SELECT outcome, started_at, message FROM source_runs WHERE kind = %s AND finished_at IS NOT NULL
@@ -486,29 +548,36 @@ def status(conn: psycopg.Connection) -> dict[str, Any]:
             return {"state": "never", "last_attempt_at": None, "message": None}
         return {"state": row["outcome"], "last_attempt_at": _iso(row["started_at"]), "message": row["message"]}
 
-    # Freshness is per vendor index page: the aggregate is only as fresh as the
-    # stalest configured page, so one fresh OEM never hides another stale one.
+    # Freshness is per source: an eBay vendor page by its upstream snapshot time, a retailer catalog
+    # (which states no upstream time) by its last successful local observation. The aggregate is only
+    # as fresh as the stalest listed source, so one fresh source never hides another stale one.
     pages = {
         r["url"]: r
         for r in conn.execute(
-            """SELECT url, last_attempt_at, last_outcome, last_message, upstream_updated_at, last_success_at,
-                      coalesce(upstream_updated_at < now() - make_interval(hours => %s), true) AS stale
+            """SELECT url, provider, last_attempt_at, last_outcome, last_message, upstream_updated_at, last_success_at,
+                      coalesce(CASE WHEN provider = %s THEN upstream_updated_at ELSE last_success_at END
+                               < now() - make_interval(hours => %s), true) AS stale
                FROM source_pages""",
-            (STALE_AFTER_HOURS,),
+            (providers.EBAY, STALE_AFTER_HOURS),
         ).fetchall()
     }
-    counts = {
-        r["vendor"]: r["n"]
-        for r in conn.execute(
-            f"""SELECT l.vendor, count(*) AS n FROM configurations c JOIN listings l ON l.id = c.listing_id
-               WHERE c.active AND l.archived_at IS NULL AND l.ended_at IS NULL AND {HIDE_OVERRIDDEN_SQL}
-               GROUP BY l.vendor"""
-        ).fetchall()
-    }
-    sources = []
-    for vendor, url in VENDOR_INDEX_URLS:
+    # Active inventory per eBay vendor page and per retailer (a retailer catalog mixes OEMs).
+    counts: dict[tuple[str, str | None], int] = {}
+    for r in conn.execute(
+        f"""SELECT l.provider, CASE WHEN l.provider = %s THEN l.vendor END AS vendor, count(*) AS n
+            FROM configurations c JOIN listings l ON l.id = c.listing_id
+            WHERE c.active AND l.archived_at IS NULL AND l.ended_at IS NULL AND {HIDE_OVERRIDDEN_SQL}
+            GROUP BY 1, 2""",
+        (providers.EBAY,),
+    ).fetchall():
+        counts[(r["provider"], r["vendor"])] = r["n"]
+    names = providers.names()
+
+    def entry(provider: str, vendor: str | None, url: str, count: int) -> dict[str, Any]:
         page = pages.get(url)
-        sources.append({
+        return {
+            "provider": provider,
+            "platform": names[provider],
             "vendor": vendor,
             "url": url,
             "state": page["last_outcome"] if page and page["last_outcome"] else "never",
@@ -516,9 +585,14 @@ def status(conn: psycopg.Connection) -> dict[str, Any]:
             "last_success_at": _iso(page["last_success_at"]) if page else None,
             "source_updated_at": _iso(page["upstream_updated_at"]) if page else None,
             "stale": bool(page["stale"]) if page else True,
-            "inventory_count": counts.get(vendor, 0),
+            "inventory_count": count,
             "message": page["last_message"] if page else None,
-        })
+        }
+
+    sources = [entry(providers.EBAY, vendor, url, counts.get((providers.EBAY, vendor), 0))
+               for vendor, url in VENDOR_INDEX_URLS]
+    if retailers:
+        sources += [entry(key, None, r.catalog_url, counts.get((key, None), 0)) for key, r in RETAILERS.items()]
     upstreams = [pages[url]["upstream_updated_at"] if url in pages else None for _, url in VENDOR_INDEX_URLS]
     last_success = conn.execute(
         "SELECT max(finished_at) AS ts FROM source_runs WHERE kind = 'discovery' AND outcome = 'success'"
@@ -530,9 +604,10 @@ def status(conn: psycopg.Connection) -> dict[str, Any]:
         ).fetchall()
     ]
     return {
-        "provider": "PerUnitPrice",
+        "provider": providers.EBAY,
         "coverage": COVERAGE,
         "source_urls": [url for _, url in VENDOR_INDEX_URLS],
+        # eBay index upstream snapshot time (stalest vendor page); retailer catalogs state none.
         "source_updated_at": None if None in upstreams else _iso(min(upstreams)),
         "last_success_at": _iso(last_success),
         "stale": any(s["stale"] for s in sources),

@@ -20,7 +20,7 @@ from typing import Any
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import domain
+from . import domain, providers
 
 MAX_MANUAL_PER_LISTING = 100
 LOCK_TIMEOUT = "5s"
@@ -251,16 +251,13 @@ def _editable(values: dict[str, Any], states: dict[str, str]) -> dict[str, Any]:
 
 
 def _rebuild(conn: psycopg.Connection, listing_id: int, variant_key: str) -> dict[str, Any] | None:
-    """Re-run the pure domain builder on stored observations; the configuration with this exact key."""
-    from .collector import effective_page
+    """Re-run the collector's pure per-provider builder on stored observations; the configuration with this key."""
+    from .collector import RECOMPUTE_COLUMNS
 
-    listing = conn.execute(
-        "SELECT id, source_record, description_claims, page_claims, page_status FROM listings WHERE id = %s",
-        (listing_id,),
-    ).fetchone()
+    listing = conn.execute(f"SELECT {RECOMPUTE_COLUMNS} FROM listings WHERE id = %s", (listing_id,)).fetchone()
     record = listing["source_record"]
     catalog = conn.execute("SELECT * FROM server_models WHERE model = %s", (record.get("model") or "",)).fetchone()
-    configs, _ = domain.build_configurations(record, catalog, listing["description_claims"], effective_page(listing))
+    configs, _ = providers.build_listing(listing, catalog)
     return next((c for c in configs if c["variant_key"] == variant_key), None)
 
 
