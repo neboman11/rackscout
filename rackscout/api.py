@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
-from . import cpu_specs, db, manual, providers, queries, refresh
+from . import cpu_specs, db, hardware_platforms, manual, providers, queries, refresh
 from .config import load_settings
 from .domain import SUPPORTED_VENDORS, normalize_vendor
 
@@ -24,6 +24,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 +\-]{0,59}")
 MAX_MODELS = 100
 MAX_PROVIDERS = 20
+MAX_HARDWARE_VALUES = 50
 REFRESH_PATH = "/api/refresh"
 MAX_REFRESH_BODY = 1024
 MAX_EDIT_BODY = 32768
@@ -112,11 +113,32 @@ def _bool(name: str, raw: str | None, default: bool) -> bool:
     raise HTTPException(status_code=422, detail=f"{name} must be true or false")
 
 
+def _labels(name: str, raw: list[str] | None, allowed: tuple[str, ...]) -> tuple[str, ...]:
+    """Repeated reference-label parameter: trimmed, case-insensitive, canonical, deduplicated; empty ignored."""
+    if raw is not None and len(raw) > MAX_HARDWARE_VALUES:
+        raise HTTPException(status_code=422, detail=f"at most {MAX_HARDWARE_VALUES} {name} values may be supplied")
+    canonical = {label.casefold(): label for label in allowed}
+    out: list[str] = []
+    for value in raw or []:
+        value = value.strip()
+        if not value:
+            continue
+        label = canonical.get(value.casefold())
+        if label is None:
+            raise HTTPException(status_code=422, detail=f"{name} must be one of {', '.join(allowed)}")
+        if label not in out:
+            out.append(label)
+    return tuple(out)
+
+
 def parse_filters(
     provider: Annotated[list[str] | None, Query(max_length=MAX_PROVIDERS)] = None,
     vendor: str | None = None,
     model: Annotated[list[str] | None, Query(max_length=MAX_MODELS)] = None,
     generation: str | None = None,
+    cpu_manufacturer: Annotated[list[str] | None, Query()] = None,
+    cpu_architecture: Annotated[list[str] | None, Query()] = None,
+    memory_platform: Annotated[list[str] | None, Query()] = None,
     modern_only: str | None = None,
     height: str | None = None,
     min_ram: str | None = None,
@@ -184,6 +206,9 @@ def parse_filters(
         vendor=vendor_name,
         models=tuple(models),
         generation=gen,
+        cpu_manufacturers=_labels("cpu_manufacturer", cpu_manufacturer, hardware_platforms.MANUFACTURERS),
+        cpu_architectures=_labels("cpu_architecture", cpu_architecture, hardware_platforms.architectures()),
+        memory_platforms=_labels("memory_platform", memory_platform, hardware_platforms.MEMORY_PLATFORMS),
         modern_only=_bool("modern_only", modern_only, True),
         height=_opt_int("height", height, 1, 1, 10),
         min_ram=_opt_int("min_ram", min_ram, 16, 0, 65536),

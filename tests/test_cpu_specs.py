@@ -29,6 +29,22 @@ def test_lookup_does_not_assume_chassis_socket_capacity_is_population():
     assert result["total_cores"] is None
 
 
+@pytest.mark.parametrize("model", ["i7-5960X", "Core i7-5960X", "Intel(R) Core(TM) i7-5960X CPU @ 3.00GHz"])
+def test_core_brand_word_is_decoration_not_part_of_the_sku(model):
+    with TestClient(app) as client:
+        result = client.get("/api/cpu-specs", params={"cpu_model": model, "cpu_count": 1}).json()
+    assert result["match"]["cpu_model"] == "i7-5960X"
+    assert result["total_cores"] == 8
+
+
+@pytest.mark.parametrize("model", ["Core i7-5960", "Core i7", "Core"])
+def test_core_brand_word_alone_never_borrows_a_neighbor_sku(model):
+    with TestClient(app) as client:
+        result = client.get("/api/cpu-specs", params={"cpu_model": model, "cpu_count": 1}).json()
+    assert result == {"match": None, "total_cores": None}
+
+
+
 @pytest.mark.parametrize("model", [
     "Gold 6150 or Gold 6148", "Gold 6150 NOT-A-REAL-SUFFIX",
     "E5-2680 v99", "Unidentified CPU", "AMD Xeon Gold 6150",

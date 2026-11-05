@@ -89,10 +89,43 @@ def migrate(conn: psycopg.Connection) -> list[int]:
                 continue
             log.info("applying migration %03d", version)
             conn.execute(path.read_text(encoding="utf-8"))
+            if version in _DATA_BACKFILLS:
+                _DATA_BACKFILLS[version](conn)
             conn.execute("INSERT INTO schema_migrations (version) VALUES (%s)", (version,))
             applied.append(version)
         sync_reference_data(conn)
     return applied
+
+
+def _backfill_memory_types(conn: psycopg.Connection) -> None:
+    """Migration 007: explicit memory statements of existing source rows from their stored observations.
+
+    Uses the collector's parser so a later recompute writes identical values (no revision change).
+    Manual rows are left NULL/false (their baselines never captured a statement); nothing else is modified.
+    """
+    from .collector import listing_memory
+
+    ids: list[int] = []
+    types: list[str | None] = []
+    conflicts: list[bool] = []
+    for r in conn.execute(
+        """SELECT c.id, c.variant_key, l.provider, l.source_record FROM configurations c
+           JOIN listings l ON l.id = c.listing_id WHERE c.origin = 'source'"""
+    ).fetchall():
+        memory_type, conflict = listing_memory(r["provider"], r["source_record"], r["variant_key"])
+        if memory_type is not None or conflict:
+            ids.append(r["id"])
+            types.append(memory_type)
+            conflicts.append(conflict)
+    conn.execute(
+        """UPDATE configurations c SET memory_type = v.memory_type, memory_type_conflict = v.conflict
+           FROM unnest(%s::bigint[], %s::text[], %s::boolean[]) AS v(id, memory_type, conflict) WHERE c.id = v.id""",
+        (ids, types, conflicts),
+    )
+
+
+# Data steps that need application code, run right after their migration file in the same transaction.
+_DATA_BACKFILLS = {7: _backfill_memory_types}
 
 
 class ReferenceDataError(RuntimeError):
@@ -153,9 +186,10 @@ def load_benchmarks() -> dict[str, Any] | None:
 
 
 def sync_reference_data(conn: psycopg.Connection) -> None:
-    """Upsert cited model metadata and, when configured, external benchmark data (never inventory).
+    """Upsert cited model metadata, CPU platform references and, when configured, external benchmark data.
 
-    Without a configured benchmark file, stored benchmark rows are left untouched.
+    Inventory is never revised: only the reference-derived ``configurations.cpu_platform_key`` is
+    re-derived. Without a configured benchmark file, stored benchmark rows are left untouched.
     """
     from .domain import normalize_cpu_key
 
@@ -174,6 +208,7 @@ def sync_reference_data(conn: psycopg.Connection) -> None:
             m,
         )
     conn.execute("DELETE FROM server_models WHERE NOT (model = ANY(%s))", ([m["model"] for m in models],))
+    _sync_cpu_platforms(conn)
     doc = load_benchmarks()
     if doc is None:
         log.info("%s not set; CPU benchmark data not synchronized", BENCHMARKS_FILE_ENV)
@@ -191,6 +226,41 @@ def sync_reference_data(conn: psycopg.Connection) -> None:
             {**b, "key": key, "provider": doc["provider"]},
         )
     conn.execute("DELETE FROM cpu_benchmarks WHERE NOT (cpu_key = ANY(%s))", (keys,))
+
+
+def _sync_cpu_platforms(conn: psycopg.Connection) -> None:
+    """Upsert exact-model CPU platform references and re-derive every configuration's reference key.
+
+    Keys come from each row's own stored CPU model (source and manual alike); revisions, values, manual
+    metadata and history are untouched. Older schemas (before migration 007) have nothing to sync.
+    """
+    if conn.execute("SELECT to_regclass('cpu_platforms') IS NOT NULL AS present").fetchone()["present"] is not True:
+        return
+    from . import hardware_platforms
+
+    refs = hardware_platforms.references()
+    for r in refs:
+        conn.execute(
+            """INSERT INTO cpu_platforms (cpu_key, cpu_model, manufacturer, architecture, memory_platform, source_url,
+                 provider, retrieved_at)
+               VALUES (%(cpu_key)s, %(cpu_model)s, %(manufacturer)s, %(architecture)s, %(memory_platform)s,
+                 %(source_url)s, %(provider)s, %(retrieved_at)s)
+               ON CONFLICT (cpu_key) DO UPDATE SET cpu_model = EXCLUDED.cpu_model,
+                 manufacturer = EXCLUDED.manufacturer, architecture = EXCLUDED.architecture,
+                 memory_platform = EXCLUDED.memory_platform, source_url = EXCLUDED.source_url,
+                 provider = EXCLUDED.provider, retrieved_at = EXCLUDED.retrieved_at""",
+            r,
+        )
+    conn.execute("DELETE FROM cpu_platforms WHERE NOT (cpu_key = ANY(%s))", ([r["cpu_key"] for r in refs],))
+    models = [r["cpu_model"] for r in conn.execute(
+        "SELECT DISTINCT cpu_model FROM configurations WHERE cpu_model IS NOT NULL").fetchall()]
+    conn.execute(
+        """UPDATE configurations c SET cpu_platform_key = k.key
+           FROM unnest(%s::text[], %s::text[]) AS k(model, key)
+           WHERE c.cpu_model = k.model AND c.cpu_platform_key IS DISTINCT FROM k.key""",
+        (models, [hardware_platforms.reference_key(m) for m in models]),
+    )
+    conn.execute("UPDATE configurations SET cpu_platform_key = NULL WHERE cpu_model IS NULL AND cpu_platform_key IS NOT NULL")
 
 
 def schema_ready(conn: psycopg.Connection) -> bool:

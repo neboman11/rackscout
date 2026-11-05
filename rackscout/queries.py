@@ -15,7 +15,7 @@ from typing import Any
 
 import psycopg
 
-from . import cpu_specs, providers
+from . import cpu_specs, hardware_platforms, providers
 from .config import VENDOR_INDEX_URLS
 from .domain import SUPPORTED_VENDORS
 from .retail_sources import RETAILERS
@@ -68,6 +68,21 @@ HIDE_OVERRIDDEN_SQL = (
     " WHERE mc.source_configuration_id = c.id AND mc.origin = 'manual' AND mc.active)"
 )
 
+# A CPU platform reference applies only to a known, non-conflicting CPU model that is not explicitly
+# missing; the join then yields no reference row (never a nearby SKU or a chassis guess).
+CPU_PLATFORM_JOIN_SQL = (
+    "LEFT JOIN cpu_platforms hp ON hp.cpu_key = c.cpu_platform_key"
+    " AND c.cpu_model_state IN ('confirmed', 'inferred') AND coalesce(c.essential_states->>'cpu', '') <> 'missing'"
+)
+# Effective memory platform: the explicit listing memory type, else the CPU reference's single platform;
+# an explicit statement naming several generations, or an explicit type contradicting the CPU reference,
+# leaves it unknown.
+MEMORY_PLATFORM_SQL = (
+    "(CASE WHEN c.memory_type_conflict THEN NULL"
+    " WHEN c.memory_type IS NOT NULL AND hp.memory_platform IS NOT NULL AND c.memory_type <> hp.memory_platform"
+    " THEN NULL ELSE coalesce(c.memory_type, hp.memory_platform) END)"
+)
+
 SELECT_COLUMNS = f"""
 c.id, c.variant_id, c.variant_label, c.model, c.cpu_model, c.cpu_count, c.cpu_count_state, c.total_cores,
 c.ram_gb, c.ram_state, c.drive_bays, c.bays_state, c.drive_size, c.size_state, c.storage_state, c.storage_conf,
@@ -96,15 +111,19 @@ CASE WHEN l.provider = '{providers.EBAY}' AND l.description_claims->>'status' = 
 END AS description_text,
 m.generation, m.generation_label, m.target_era, m.rack_units, m.socket_capacity,
 b.cpu_mark, b.single_thread, b.samples, b.version AS bench_version, b.scope AS bench_scope,
-b.source_url AS bench_url, b.retrieved_at AS bench_retrieved_at
+b.source_url AS bench_url, b.retrieved_at AS bench_retrieved_at,
+c.memory_type, c.memory_type_conflict, hp.manufacturer AS cpu_manufacturer, hp.architecture AS cpu_architecture,
+hp.memory_platform AS cpu_memory_platform, {MEMORY_PLATFORM_SQL} AS memory_platform,
+hp.source_url AS hardware_source_url, hp.provider AS hardware_provider, hp.retrieved_at AS hardware_retrieved_at
 """
 
-FROM_SQL = """
+FROM_SQL = f"""
 FROM configurations c
 JOIN listings l ON l.id = c.listing_id
 LEFT JOIN configurations src ON src.id = c.source_configuration_id
 LEFT JOIN server_models m ON m.model = c.model
 LEFT JOIN cpu_benchmarks b ON b.cpu_key = c.cpu_key
+{CPU_PLATFORM_JOIN_SQL}
 WHERE c.active AND l.archived_at IS NULL AND l.ended_at IS NULL AND c.currency = 'USD'
 """
 
@@ -119,6 +138,12 @@ class Filters:
     models: tuple[str, ...] = ()
     # Vendor-scoped platform generation (Dell 14G, HPE Gen10, Supermicro X11, ...); requires ``vendor``.
     generation: int | None = None
+    # Hardware reference labels (``hardware_platforms``), OR-combined within each field and AND-combined
+    # across fields; empty means unconstrained. Validated and deduplicated by the API layer. Hard filters:
+    # an unknown or contradicted platform never admits a row, not even as a lead.
+    cpu_manufacturers: tuple[str, ...] = ()
+    cpu_architectures: tuple[str, ...] = ()
+    memory_platforms: tuple[str, ...] = ()
     modern_only: bool = True
     height: int | None = 1
     min_ram: int | None = 16
@@ -163,6 +188,15 @@ def build_predicates(f: Filters) -> tuple[list[str], list[str], list[str], dict[
     if f.generation is not None:
         hard.append("(m.vendor = %(vendor)s AND m.generation = %(generation)s)")
         p["generation"] = f.generation
+    if f.cpu_manufacturers:
+        hard.append("hp.manufacturer = ANY(%(cpu_manufacturers)s)")
+        p["cpu_manufacturers"] = list(f.cpu_manufacturers)
+    if f.cpu_architectures:
+        hard.append("hp.architecture = ANY(%(cpu_architectures)s)")
+        p["cpu_architectures"] = list(f.cpu_architectures)
+    if f.memory_platforms:
+        hard.append(f"{MEMORY_PLATFORM_SQL} = ANY(%(memory_platforms)s)")
+        p["memory_platforms"] = list(f.memory_platforms)
     if f.modern_only:
         hard.append("m.target_era")
     if f.height is not None:
@@ -279,6 +313,11 @@ def _money(value: Decimal | None) -> str | None:
 def _warnings(r: dict[str, Any]) -> list[str]:
     """Stored warnings plus verification staleness evaluated at read time."""
     warnings = list(r["warnings"] or [])
+    if r["memory_type_conflict"]:
+        warnings.append("Listing states conflicting memory generations; memory platform unknown")
+    if r["memory_type"] and r["cpu_memory_platform"] and r["memory_type"] != r["cpu_memory_platform"]:
+        warnings.append(f"Listing memory type {r['memory_type']} contradicts the {r['cpu_memory_platform']} platform "
+                        f"of the referenced {r['cpu_model']} CPU; memory platform unknown")
     if r["page_applies"] and not r["page_current"]:
         when = _iso(r["page_verified_at"]) or "at an unknown time"
         if r["page_status"] != "verified":
@@ -420,6 +459,24 @@ def _quote(r: dict[str, Any]) -> dict[str, Any] | None:
             "status": quote.get("status")}
 
 
+def _hardware(r: dict[str, Any]) -> dict[str, Any]:
+    """CPU platform reference facts (model references, not installed-hardware verification) and memory platform."""
+    reference = None
+    if r["cpu_manufacturer"] is not None:
+        reference = {"source_url": r["hardware_source_url"], "provider": r["hardware_provider"],
+                     "retrieved_at": _iso(r["hardware_retrieved_at"])}
+    memory_source = None
+    if r["memory_platform"] is not None:
+        memory_source = "listing" if r["memory_type"] is not None else "cpu_reference"
+    return {
+        "cpu_manufacturer": r["cpu_manufacturer"],
+        "cpu_architecture": r["cpu_architecture"],
+        "memory_platform": r["memory_platform"],
+        "memory_platform_source": memory_source,
+        "hardware_reference": reference,
+    }
+
+
 def serialize(r: dict[str, Any], match_state: str) -> dict[str, Any]:
     benchmark = None
     cpu_spec, inferred_total_cores = _cpu_reference(r)
@@ -489,6 +546,7 @@ def serialize(r: dict[str, Any], match_state: str) -> dict[str, Any]:
         "essential_states": r["essential_states"],
         "cpu_spec": cpu_spec,
         "inferred_total_cores": inferred_total_cores,
+        **_hardware(r),
         "manual": _manual(r),
     }
 
@@ -523,6 +581,9 @@ def facets(conn: psycopg.Connection) -> dict[str, Any]:
         "model_vendors": dict(sorted(model_vendors.items())),
         "generations_by_vendor": generations_by_vendor,
         "generation_labels": {v: {g: " / ".join(sorted(n)) for g, n in by_gen.items()} for v, by_gen in labels.items()},
+        "cpu_manufacturers": list(hardware_platforms.MANUFACTURERS),
+        "cpu_architectures": list(hardware_platforms.architectures()),
+        "memory_platforms": list(hardware_platforms.MEMORY_PLATFORMS),
     }
 
 

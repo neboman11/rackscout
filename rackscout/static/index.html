@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
 <title>RackScout — used rack server finder</title>
-<link rel="stylesheet" href="/static/app.css?v=0.8.0">
-<script src="/static/app.js?v=0.8.0" defer></script>
+<link rel="stylesheet" href="/static/app.css?v=0.9.0">
+<script src="/static/app.js?v=0.9.0" defer></script>
 </head>
 <body>
 <a href="#inventory" class="sr-only">Skip to inventory</a>
@@ -75,6 +75,38 @@
         </div>
         <label class="field"><span>Drive form factor</span><select id="drive_size"><option value="">SFF or LFF</option><option value="SFF">2.5″ SFF</option><option value="LFF">3.5″ LFF</option></select></label>
         <label class="field"><span>Populated sockets</span><select id="cpu_count"><option value="">Any CPU count</option><option value="1">Single populated</option><option value="2">Dual populated</option></select></label>
+        <div class="field">
+          <span id="cpu_manufacturer-label">CPU manufacturer</span>
+          <details class="multi" id="cpu_manufacturer-picker">
+            <summary aria-labelledby="cpu_manufacturer-label cpu_manufacturer-count cpu_manufacturer-names"><span class="multi-count" id="cpu_manufacturer-count">All manufacturers</span><span class="multi-names" id="cpu_manufacturer-names"></span></summary>
+            <div class="multi-panel">
+              <button type="button" class="linkbutton" id="cpu_manufacturer-clear" disabled>Clear CPU manufacturers</button>
+              <fieldset class="multi-options" id="cpu_manufacturer-options" aria-labelledby="cpu_manufacturer-label"></fieldset>
+            </div>
+          </details>
+        </div>
+        <div class="field">
+          <span id="cpu_architecture-label">CPU architecture family</span>
+          <details class="multi" id="cpu_architecture-picker">
+            <summary aria-labelledby="cpu_architecture-label cpu_architecture-count cpu_architecture-names" aria-describedby="cpu_architecture-help"><span class="multi-count" id="cpu_architecture-count">All families</span><span class="multi-names" id="cpu_architecture-names"></span></summary>
+            <div class="multi-panel">
+              <button type="button" class="linkbutton" id="cpu_architecture-clear" disabled>Clear architecture families</button>
+              <fieldset class="multi-options" id="cpu_architecture-options" aria-labelledby="cpu_architecture-label"></fieldset>
+            </div>
+          </details>
+          <small id="cpu_architecture-help" class="field-help">Exact CPU model references. Unknown CPUs do not match selected families.</small>
+        </div>
+        <div class="field">
+          <span id="memory_platform-label">Memory platform</span>
+          <details class="multi" id="memory_platform-picker">
+            <summary aria-labelledby="memory_platform-label memory_platform-count memory_platform-names" aria-describedby="memory_platform-help"><span class="multi-count" id="memory_platform-count">All memory platforms</span><span class="multi-names" id="memory_platform-names"></span></summary>
+            <div class="multi-panel">
+              <button type="button" class="linkbutton" id="memory_platform-clear" disabled>Clear memory platforms</button>
+              <fieldset class="multi-options" id="memory_platform-options" aria-labelledby="memory_platform-label"></fieldset>
+            </div>
+          </details>
+          <small id="memory_platform-help" class="field-help">DDR generation, not installed capacity. Tick more than one to compare platforms.</small>
+        </div>
         <label class="field"><span>Maximum total price (USD)</span><input id="max_total" type="text" placeholder="No limit" inputmode="decimal" autocomplete="off" aria-describedby="max_total_help"><small id="max_total_help" class="field-help">Applies to known quoted totals. An unknown total never counts as a match; a base-price listing that might fit appears only under unverified leads.</small></label>
         <div id="max_total_error" class="field-error" role="alert" hidden></div>
         <div class="rule">

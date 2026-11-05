@@ -23,7 +23,7 @@ _INTEL_RE = re.compile(r"\b(?:intel|xeon|platinum|gold|silver|bronze)\b|\be[3578
 _MARK_RE = re.compile(r"\((?:r|tm)\)|[®™℠]")
 _CLOCK_RE = re.compile(r"(?:@\s*)?\b\d+(?:\.\d+)?\s*ghz\b")
 _VERSION_RE = re.compile(r"\b(\d{3,4})\s*v(\d)\b")
-_NOISE_TOKENS = frozenset({"intel", "amd", "xeon", "cpu", "processor", "@"})
+_NOISE_TOKENS = frozenset({"intel", "amd", "xeon", "core", "cpu", "processor", "@"})
 
 
 def canonical_key(cpu_model: str | None) -> str | None:

@@ -1,0 +1,2206 @@
+{
+ "description": "Exact-SKU CPU manufacturer, broad architecture family and single DDR memory platform references. Model/platform references only; they do not verify hardware installed in a listing. memory_platform is null when the platform supports more than one DDR generation or no primary memory source was verified.",
+ "architecture_labels": "Vendor codenames reduced to broad families: Sandy/Ivy Bridge-EP/EN, Nehalem-EP, Westmere-EP, Haswell-E, Skylake-W, Milan-X and Sapphire Rapids HBM map to their base family; distinct generations (e.g. Rome vs Milan, Genoa vs Bergamo vs Siena vs Turin) stay separate.",
+ "sources": {
+  "amd-epyc-4564p": {
+   "url": "https://www.amd.com/en/products/processors/server/epyc/4004-series/amd-epyc-4564p.html",
+   "provider": "AMD product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Series: EPYC 4004 Series; Platform AM5; System Memory Type: DDR5."
+  },
+  "amd-epyc-7251": {
+   "url": "https://www.amd.com/en/support/downloads/drivers.html/processors/epyc/epyc-7001-series/amd-epyc-7251.html",
+   "provider": "AMD product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Series: EPYC 7001 Series; System Memory Type: DDR4."
+  },
+  "amd-epyc-7443": {
+   "url": "https://www.amd.com/en/support/downloads/drivers.html/processors/epyc/epyc-7003-series/amd-epyc-7443.html",
+   "provider": "AMD product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Series: EPYC 7003 Series; System Memory Type: DDR4."
+  },
+  "amd-epyc-7532": {
+   "url": "https://www.amd.com/en/support/downloads/drivers.html/processors/epyc/epyc-7002-series/amd-epyc-7532.html",
+   "provider": "AMD product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Series: EPYC 7002 Series; System Memory Type: DDR4."
+  },
+  "amd-epyc-8324p": {
+   "url": "https://www.amd.com/en/support/downloads/drivers.html/processors/epyc/epyc-8004-series/amd-epyc-8324p.html",
+   "provider": "AMD product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Series: EPYC 8004 Series; System Memory Type: DDR5."
+  },
+  "amd-epyc-9654": {
+   "url": "https://www.amd.com/en/support/downloads/drivers.html/processors/epyc/epyc-9004-series/amd-epyc-9654.html",
+   "provider": "AMD product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Series: EPYC 9004 Series; System Memory Type: DDR5."
+  },
+  "amd-epyc-9655": {
+   "url": "https://www.amd.com/en/support/downloads/drivers.html/processors/epyc/epyc-9005-series/amd-epyc-9655.html",
+   "provider": "AMD product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Series: EPYC 9005 Series; System Memory Type: DDR5."
+  },
+  "amd-ryzen-7-3800x": {
+   "url": "https://www.amd.com/en/support/downloads/drivers.html/processors/ryzen/ryzen-3000-series/amd-ryzen-7-3800x.html",
+   "provider": "AMD product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Former Codename: Matisse; System Memory Type: DDR4."
+  },
+  "compute-specs-db": {
+   "url": "https://raw.githubusercontent.com/elokwentnie/compute-specs-db/9b64d1770b9fea2b749e3ad599172ad0bd900f68/cpu_spec_validated.csv",
+   "provider": "Compute Specs DB (MIT)",
+   "retrieved_at": "2026-11-04T16:14:57Z",
+   "evidence": "Pinned upstream CSV columns Family/CPU Model/Codename; codenames reduced to broad family labels."
+  },
+  "intel-5500-brief": {
+   "url": "https://www.intel.com/content/dam/doc/product-brief/xeon-5500-server-brief.pdf",
+   "provider": "Intel Xeon Processor 5500 Series product brief",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Lists X5560/X5570/E5520 as 5500 series, Intel Microarchitecture Nehalem, DDR3 memory."
+  },
+  "intel-bronze-3104": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/123546/intel-xeon-bronze-3104-processor-8-25m-cache-1-70-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Skylake; Memory Types: DDR4-2133."
+  },
+  "intel-e-2414": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/236193/intel-xeon-e2414-processor-12m-cache-2-60-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Raptor Lake; Memory Types: DDR5-4800."
+  },
+  "intel-e-2434": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/236192/intel-xeon-e2434-processor-12m-cache-3-40-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Raptor Lake; Memory Types: DDR5-4800."
+  },
+  "intel-e-2436": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/236190/intel-xeon-e2436-processor-18m-cache-2-90-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Raptor Lake; Memory Types: DDR5-4800."
+  },
+  "intel-e-2456": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/236188/intel-xeon-e2456-processor-18m-cache-3-30-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Raptor Lake; Memory Types: DDR5-4800."
+  },
+  "intel-e-2468": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/236184/intel-xeon-e2468-processor-24m-cache-2-60-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Raptor Lake; Memory Types: DDR5-4800."
+  },
+  "intel-e-2478": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/236183/intel-xeon-e2478-processor-24m-cache-2-80-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Raptor Lake; Memory Types: DDR5-4800."
+  },
+  "intel-e-2488": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/236182/intel-xeon-e2488-processor-24m-cache-3-20-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Raptor Lake; Memory Types: DDR5-4800."
+  },
+  "intel-e2400-memory": {
+   "url": "https://www.intel.com/content/www/us/en/support/articles/000096437/processors/intel-xeon-processors.html",
+   "provider": "Intel support article 000096437",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Xeon E-2400 series memory type DDR5 (UDIMM, ECC)."
+  },
+  "intel-e3-1270-v6": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/97479/intel-xeon-processor-e31270-v6-8m-cache-3-80-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Kaby Lake; Memory Types: DDR4-2400, DDR3L-1866."
+  },
+  "intel-e5-2407-v2": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/75782/intel-xeon-processor-e52407-v2-10m-cache-2-40-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Ivy Bridge EN; Memory Types: DDR3 800/1066/1333."
+  },
+  "intel-e5-2450": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/64611/intel-xeon-processor-e52450-20m-cache-2-10-ghz-8-00-gts-intel-qpi/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Sandy Bridge EN; Memory Types: DDR3 800/1066/1333/1600."
+  },
+  "intel-e5-2618l-v3": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/83351/intel-xeon-processor-e52618l-v3-20m-cache-2-30-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Haswell; Memory Types: DDR4 1600/1866."
+  },
+  "intel-e5-2618l-v4": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/92982/intel-xeon-processor-e52618l-v4-25m-cache-2-20-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Broadwell; Memory Types: DDR4 1600/1866/2133."
+  },
+  "intel-e5-2658a-v3": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/86067/intel-xeon-processor-e52658a-v3-30m-cache-2-20-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Haswell; Memory Types: DDR4 1600/1866/2133."
+  },
+  "intel-e5-2670-0": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/64595/intel-xeon-processor-e52670-20m-cache-2-60-ghz-8-00-gts-intel-qpi/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Sandy Bridge EP; Memory Types: DDR3 800/1066/1333/1600."
+  },
+  "intel-e5-2680-v2": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/75277/intel-xeon-processor-e52680-v2-25m-cache-2-80-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Ivy Bridge EP; Memory Types: DDR3 800/1066/1333/1600/1866."
+  },
+  "intel-e5-2680-v3": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/81908/intel-xeon-processor-e52680-v3-30m-cache-2-50-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Haswell; Memory Types: DDR4 1600/1866/2133."
+  },
+  "intel-e5-2680-v4": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/91754/intel-xeon-processor-e52680-v4-35m-cache-2-40-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Broadwell; Memory Types: DDR4 1600/1866/2133/2400."
+  },
+  "intel-gold-6130": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/120492/intel-xeon-gold-6130-processor-22m-cache-2-10-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Skylake; Memory Types: DDR4-2666."
+  },
+  "intel-gold-6230": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/192437/intel-xeon-gold-6230-processor-27-5m-cache-2-10-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Cascade Lake; Memory Types: DDR4-2933."
+  },
+  "intel-gold-6430": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/231737/intel-xeon-gold-6430-processor-60m-cache-2-10-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Sapphire Rapids; Memory Types: Up to DDR5 4400 MT/s 1DPC and 2DPC."
+  },
+  "intel-gold-6530": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/237249/intel-xeon-gold-6530-processor-160m-cache-2-10-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Emerald Rapids; Memory Types: DDR5 @ 4800 MT/s (1 DPC)."
+  },
+  "intel-i7-5960x": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/82930/intel-core-i75960x-processor-extreme-edition-20m-cache-up-to-3-50-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Haswell E; Memory Types: DDR4 1600/1866/2133."
+  },
+  "intel-i9-13900k": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/230496/intel-core-i913900k-processor-36m-cache-up-to-5-80-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Raptor Lake; Memory Types: Up to DDR5 5600 MT/s; Up to DDR4 3200 MT/s."
+  },
+  "intel-max-9480": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/232592/intel-xeon-cpu-max-9480-processor-112-5m-cache-1-90-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Sapphire Rapids HBM; Memory Types: Up to DDR5 4800 MT/s 1DPC ;  Up to DDR5 4400 MT/s 2DPC."
+  },
+  "intel-platinum-9242": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/194145/intel-xeon-platinum-9242-processor-71-5m-cache-2-30-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Cascade Lake; Memory Types: DDR4-2933."
+  },
+  "intel-silver-4314": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/215269/intel-xeon-silver-4314-processor-24m-cache-2-40-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Ice Lake; Memory Types: DDR4-2667."
+  },
+  "intel-w-2125": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/126708/intel-xeon-w2125-processor-8-25m-cache-4-00-ghz/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Skylake; Memory Types: DDR4 1600/1866/2133/2400/2666."
+  },
+  "intel-x5650": {
+   "url": "https://www.intel.com/content/www/us/en/products/sku/47922/intel-xeon-processor-x5650-12m-cache-2-66-ghz-6-40-gts-intel-qpi/specifications.html",
+   "provider": "Intel ARK product specifications",
+   "retrieved_at": "2026-11-05T15:53:19Z",
+   "evidence": "Code Name: Products formerly Westmere EP; Memory Types: DDR3 800/1066/1333."
+  }
+ },
+ "series": {
+  "amd-4004": {
+   "memory_platform": "DDR5",
+   "memory_sources": [
+    "amd-epyc-4564p"
+   ]
+  },
+  "amd-7001": {
+   "memory_platform": "DDR4",
+   "memory_sources": [
+    "amd-epyc-7251"
+   ]
+  },
+  "amd-7002": {
+   "memory_platform": "DDR4",
+   "memory_sources": [
+    "amd-epyc-7532"
+   ]
+  },
+  "amd-7003": {
+   "memory_platform": "DDR4",
+   "memory_sources": [
+    "amd-epyc-7443"
+   ]
+  },
+  "amd-8004": {
+   "memory_platform": "DDR5",
+   "memory_sources": [
+    "amd-epyc-8324p"
+   ]
+  },
+  "amd-9004": {
+   "memory_platform": "DDR5",
+   "memory_sources": [
+    "amd-epyc-9654"
+   ]
+  },
+  "amd-9005": {
+   "memory_platform": "DDR5",
+   "memory_sources": [
+    "amd-epyc-9655"
+   ]
+  },
+  "amd-opteron-6200": {
+   "memory_platform": null,
+   "memory_sources": [],
+   "note": "No primary memory-type source verified; memory platform left unknown."
+  },
+  "amd-opteron-6300": {
+   "memory_platform": null,
+   "memory_sources": [],
+   "note": "No primary memory-type source verified; memory platform left unknown."
+  },
+  "amd-ryzen-3800x": {
+   "memory_platform": "DDR4",
+   "memory_sources": [
+    "amd-ryzen-7-3800x"
+   ]
+  },
+  "intel-5500": {
+   "memory_platform": "DDR3",
+   "memory_sources": [
+    "intel-5500-brief"
+   ]
+  },
+  "intel-5600": {
+   "memory_platform": "DDR3",
+   "memory_sources": [
+    "intel-x5650"
+   ]
+  },
+  "intel-e-2400": {
+   "memory_platform": "DDR5",
+   "memory_sources": [
+    "intel-e2400-memory"
+   ]
+  },
+  "intel-e3-1270-v6": {
+   "memory_platform": null,
+   "memory_sources": [
+    "intel-e3-1270-v6"
+   ],
+   "note": "Intel lists both DDR4 and DDR3L; no single memory platform."
+  },
+  "intel-e5": {
+   "memory_platform": "DDR3",
+   "memory_sources": [
+    "intel-e5-2670-0",
+    "intel-e5-2450"
+   ]
+  },
+  "intel-e5-v2": {
+   "memory_platform": "DDR3",
+   "memory_sources": [
+    "intel-e5-2680-v2",
+    "intel-e5-2407-v2"
+   ]
+  },
+  "intel-e5-v3": {
+   "memory_platform": "DDR4",
+   "memory_sources": [
+    "intel-e5-2680-v3",
+    "intel-e5-2618l-v3",
+    "intel-e5-2658a-v3"
+   ]
+  },
+  "intel-e5-v4": {
+   "memory_platform": "DDR4",
+   "memory_sources": [
+    "intel-e5-2680-v4",
+    "intel-e5-2618l-v4"
+   ]
+  },
+  "intel-i7-5960x": {
+   "memory_platform": "DDR4",
+   "memory_sources": [
+    "intel-i7-5960x"
+   ]
+  },
+  "intel-i9-13900k": {
+   "memory_platform": null,
+   "memory_sources": [
+    "intel-i9-13900k"
+   ],
+   "note": "Intel lists both DDR5 and DDR4; no single memory platform."
+  },
+  "intel-max": {
+   "memory_platform": "DDR5",
+   "memory_sources": [
+    "intel-max-9480"
+   ]
+  },
+  "intel-scalable-1": {
+   "memory_platform": "DDR4",
+   "memory_sources": [
+    "intel-gold-6130",
+    "intel-bronze-3104"
+   ]
+  },
+  "intel-scalable-2": {
+   "memory_platform": "DDR4",
+   "memory_sources": [
+    "intel-gold-6230",
+    "intel-platinum-9242"
+   ]
+  },
+  "intel-scalable-3": {
+   "memory_platform": "DDR4",
+   "memory_sources": [
+    "intel-silver-4314"
+   ]
+  },
+  "intel-scalable-4": {
+   "memory_platform": "DDR5",
+   "memory_sources": [
+    "intel-gold-6430"
+   ]
+  },
+  "intel-scalable-5": {
+   "memory_platform": "DDR5",
+   "memory_sources": [
+    "intel-gold-6530"
+   ]
+  },
+  "intel-w-2100": {
+   "memory_platform": "DDR4",
+   "memory_sources": [
+    "intel-w-2125"
+   ]
+  }
+ },
+ "cpus": [
+  {
+   "cpu_model": "EPYC 4564P",
+   "manufacturer": "AMD",
+   "architecture": "Raphael",
+   "memory_platform": "DDR5",
+   "source": "amd-epyc-4564p",
+   "series": "amd-4004",
+   "correction": "Upstream Codename 'Genoa' corrected: AMD lists it in the EPYC 4004 Series (AM5, codename Raphael)."
+  },
+  {
+   "cpu_model": "EPYC 7251",
+   "manufacturer": "AMD",
+   "architecture": "Naples",
+   "memory_platform": "DDR4",
+   "source": "amd-epyc-7251",
+   "series": "amd-7001"
+  },
+  {
+   "cpu_model": "EPYC 7262",
+   "manufacturer": "AMD",
+   "architecture": "Rome",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7002"
+  },
+  {
+   "cpu_model": "EPYC 7282",
+   "manufacturer": "AMD",
+   "architecture": "Rome",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7002"
+  },
+  {
+   "cpu_model": "EPYC 72F3",
+   "manufacturer": "AMD",
+   "architecture": "Milan",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7003"
+  },
+  {
+   "cpu_model": "EPYC 7301",
+   "manufacturer": "AMD",
+   "architecture": "Naples",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7001"
+  },
+  {
+   "cpu_model": "EPYC 7302",
+   "manufacturer": "AMD",
+   "architecture": "Rome",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7002"
+  },
+  {
+   "cpu_model": "EPYC 7302P",
+   "manufacturer": "AMD",
+   "architecture": "Rome",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7002"
+  },
+  {
+   "cpu_model": "EPYC 7303P",
+   "manufacturer": "AMD",
+   "architecture": "Milan",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7003"
+  },
+  {
+   "cpu_model": "EPYC 7313",
+   "manufacturer": "AMD",
+   "architecture": "Milan",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7003"
+  },
+  {
+   "cpu_model": "EPYC 7313P",
+   "manufacturer": "AMD",
+   "architecture": "Milan",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7003"
+  },
+  {
+   "cpu_model": "EPYC 7351",
+   "manufacturer": "AMD",
+   "architecture": "Naples",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7001"
+  },
+  {
+   "cpu_model": "EPYC 7351P",
+   "manufacturer": "AMD",
+   "architecture": "Naples",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7001"
+  },
+  {
+   "cpu_model": "EPYC 7352",
+   "manufacturer": "AMD",
+   "architecture": "Rome",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7002"
+  },
+  {
+   "cpu_model": "EPYC 7373X",
+   "manufacturer": "AMD",
+   "architecture": "Milan",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7003"
+  },
+  {
+   "cpu_model": "EPYC 7402",
+   "manufacturer": "AMD",
+   "architecture": "Rome",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7002"
+  },
+  {
+   "cpu_model": "EPYC 7402P",
+   "manufacturer": "AMD",
+   "architecture": "Rome",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7002"
+  },
+  {
+   "cpu_model": "EPYC 7413",
+   "manufacturer": "AMD",
+   "architecture": "Milan",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7003"
+  },
+  {
+   "cpu_model": "EPYC 7443",
+   "manufacturer": "AMD",
+   "architecture": "Milan",
+   "memory_platform": "DDR4",
+   "source": "amd-epyc-7443",
+   "series": "amd-7003"
+  },
+  {
+   "cpu_model": "EPYC 7443P",
+   "manufacturer": "AMD",
+   "architecture": "Milan",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7003"
+  },
+  {
+   "cpu_model": "EPYC 7451",
+   "manufacturer": "AMD",
+   "architecture": "Naples",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7001"
+  },
+  {
+   "cpu_model": "EPYC 7452",
+   "manufacturer": "AMD",
+   "architecture": "Rome",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7002"
+  },
+  {
+   "cpu_model": "EPYC 7453",
+   "manufacturer": "AMD",
+   "architecture": "Milan",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7003"
+  },
+  {
+   "cpu_model": "EPYC 74F3",
+   "manufacturer": "AMD",
+   "architecture": "Milan",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7003"
+  },
+  {
+   "cpu_model": "EPYC 7501",
+   "manufacturer": "AMD",
+   "architecture": "Naples",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7001"
+  },
+  {
+   "cpu_model": "EPYC 7502",
+   "manufacturer": "AMD",
+   "architecture": "Rome",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7002"
+  },
+  {
+   "cpu_model": "EPYC 7513",
+   "manufacturer": "AMD",
+   "architecture": "Milan",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7003"
+  },
+  {
+   "cpu_model": "EPYC 7532",
+   "manufacturer": "AMD",
+   "architecture": "Rome",
+   "memory_platform": "DDR4",
+   "source": "amd-epyc-7532",
+   "series": "amd-7002",
+   "correction": "Upstream Codename 'Milan' corrected: AMD lists it in the EPYC 7002 Series (Rome)."
+  },
+  {
+   "cpu_model": "EPYC 7542",
+   "manufacturer": "AMD",
+   "architecture": "Rome",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7002"
+  },
+  {
+   "cpu_model": "EPYC 7543",
+   "manufacturer": "AMD",
+   "architecture": "Milan",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7003"
+  },
+  {
+   "cpu_model": "EPYC 7551",
+   "manufacturer": "AMD",
+   "architecture": "Naples",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7001"
+  },
+  {
+   "cpu_model": "EPYC 7551P",
+   "manufacturer": "AMD",
+   "architecture": "Naples",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7001"
+  },
+  {
+   "cpu_model": "EPYC 75F3",
+   "manufacturer": "AMD",
+   "architecture": "Milan",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7003"
+  },
+  {
+   "cpu_model": "EPYC 7643",
+   "manufacturer": "AMD",
+   "architecture": "Milan",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7003"
+  },
+  {
+   "cpu_model": "EPYC 7662",
+   "manufacturer": "AMD",
+   "architecture": "Rome",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7002"
+  },
+  {
+   "cpu_model": "EPYC 7702",
+   "manufacturer": "AMD",
+   "architecture": "Rome",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7002"
+  },
+  {
+   "cpu_model": "EPYC 7702P",
+   "manufacturer": "AMD",
+   "architecture": "Rome",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7002"
+  },
+  {
+   "cpu_model": "EPYC 7713",
+   "manufacturer": "AMD",
+   "architecture": "Milan",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7003"
+  },
+  {
+   "cpu_model": "EPYC 7713P",
+   "manufacturer": "AMD",
+   "architecture": "Milan",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7003"
+  },
+  {
+   "cpu_model": "EPYC 7742",
+   "manufacturer": "AMD",
+   "architecture": "Rome",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7002"
+  },
+  {
+   "cpu_model": "EPYC 7763",
+   "manufacturer": "AMD",
+   "architecture": "Milan",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7003"
+  },
+  {
+   "cpu_model": "EPYC 7773X",
+   "manufacturer": "AMD",
+   "architecture": "Milan",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7003"
+  },
+  {
+   "cpu_model": "EPYC 7F72",
+   "manufacturer": "AMD",
+   "architecture": "Rome",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7002"
+  },
+  {
+   "cpu_model": "EPYC 7H12",
+   "manufacturer": "AMD",
+   "architecture": "Rome",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "amd-7002"
+  },
+  {
+   "cpu_model": "EPYC 8324P",
+   "manufacturer": "AMD",
+   "architecture": "Siena",
+   "memory_platform": "DDR5",
+   "source": "amd-epyc-8324p",
+   "series": "amd-8004"
+  },
+  {
+   "cpu_model": "EPYC 8434PN",
+   "manufacturer": "AMD",
+   "architecture": "Siena",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-8004"
+  },
+  {
+   "cpu_model": "EPYC 9115",
+   "manufacturer": "AMD",
+   "architecture": "Turin",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9005"
+  },
+  {
+   "cpu_model": "EPYC 9124",
+   "manufacturer": "AMD",
+   "architecture": "Genoa",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9004"
+  },
+  {
+   "cpu_model": "EPYC 9224",
+   "manufacturer": "AMD",
+   "architecture": "Genoa",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9004"
+  },
+  {
+   "cpu_model": "EPYC 9254",
+   "manufacturer": "AMD",
+   "architecture": "Genoa",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9004"
+  },
+  {
+   "cpu_model": "EPYC 9255",
+   "manufacturer": "AMD",
+   "architecture": "Turin",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9005"
+  },
+  {
+   "cpu_model": "EPYC 9334",
+   "manufacturer": "AMD",
+   "architecture": "Genoa",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9004"
+  },
+  {
+   "cpu_model": "EPYC 9335",
+   "manufacturer": "AMD",
+   "architecture": "Turin",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9005"
+  },
+  {
+   "cpu_model": "EPYC 9354",
+   "manufacturer": "AMD",
+   "architecture": "Genoa",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9004"
+  },
+  {
+   "cpu_model": "EPYC 9355",
+   "manufacturer": "AMD",
+   "architecture": "Turin",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9005"
+  },
+  {
+   "cpu_model": "EPYC 9374F",
+   "manufacturer": "AMD",
+   "architecture": "Genoa",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9004"
+  },
+  {
+   "cpu_model": "EPYC 9375F",
+   "manufacturer": "AMD",
+   "architecture": "Turin",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9005"
+  },
+  {
+   "cpu_model": "EPYC 9454",
+   "manufacturer": "AMD",
+   "architecture": "Genoa",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9004"
+  },
+  {
+   "cpu_model": "EPYC 9454P",
+   "manufacturer": "AMD",
+   "architecture": "Genoa",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9004"
+  },
+  {
+   "cpu_model": "EPYC 9455",
+   "manufacturer": "AMD",
+   "architecture": "Turin",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9005"
+  },
+  {
+   "cpu_model": "EPYC 9474F",
+   "manufacturer": "AMD",
+   "architecture": "Genoa",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9004"
+  },
+  {
+   "cpu_model": "EPYC 9534",
+   "manufacturer": "AMD",
+   "architecture": "Genoa",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9004"
+  },
+  {
+   "cpu_model": "EPYC 9554",
+   "manufacturer": "AMD",
+   "architecture": "Genoa",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9004"
+  },
+  {
+   "cpu_model": "EPYC 9554P",
+   "manufacturer": "AMD",
+   "architecture": "Genoa",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9004"
+  },
+  {
+   "cpu_model": "EPYC 9565",
+   "manufacturer": "AMD",
+   "architecture": "Turin",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9005"
+  },
+  {
+   "cpu_model": "EPYC 9634",
+   "manufacturer": "AMD",
+   "architecture": "Genoa",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9004"
+  },
+  {
+   "cpu_model": "EPYC 9654",
+   "manufacturer": "AMD",
+   "architecture": "Genoa",
+   "memory_platform": "DDR5",
+   "source": "amd-epyc-9654",
+   "series": "amd-9004"
+  },
+  {
+   "cpu_model": "EPYC 9655",
+   "manufacturer": "AMD",
+   "architecture": "Turin",
+   "memory_platform": "DDR5",
+   "source": "amd-epyc-9655",
+   "series": "amd-9005"
+  },
+  {
+   "cpu_model": "EPYC 9655P",
+   "manufacturer": "AMD",
+   "architecture": "Turin",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9005"
+  },
+  {
+   "cpu_model": "EPYC 9745",
+   "manufacturer": "AMD",
+   "architecture": "Turin",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9005"
+  },
+  {
+   "cpu_model": "EPYC 9754",
+   "manufacturer": "AMD",
+   "architecture": "Bergamo",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9004"
+  },
+  {
+   "cpu_model": "EPYC 9755",
+   "manufacturer": "AMD",
+   "architecture": "Turin",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9005"
+  },
+  {
+   "cpu_model": "EPYC 9825",
+   "manufacturer": "AMD",
+   "architecture": "Turin",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9005"
+  },
+  {
+   "cpu_model": "EPYC 9965",
+   "manufacturer": "AMD",
+   "architecture": "Turin",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "amd-9005"
+  },
+  {
+   "cpu_model": "Opteron 6212",
+   "manufacturer": "AMD",
+   "architecture": "Interlagos",
+   "memory_platform": null,
+   "source": "compute-specs-db",
+   "series": "amd-opteron-6200"
+  },
+  {
+   "cpu_model": "Opteron 6234",
+   "manufacturer": "AMD",
+   "architecture": "Interlagos",
+   "memory_platform": null,
+   "source": "compute-specs-db",
+   "series": "amd-opteron-6200"
+  },
+  {
+   "cpu_model": "Opteron 6238",
+   "manufacturer": "AMD",
+   "architecture": "Interlagos",
+   "memory_platform": null,
+   "source": "compute-specs-db",
+   "series": "amd-opteron-6200"
+  },
+  {
+   "cpu_model": "Opteron 6274",
+   "manufacturer": "AMD",
+   "architecture": "Interlagos",
+   "memory_platform": null,
+   "source": "compute-specs-db",
+   "series": "amd-opteron-6200"
+  },
+  {
+   "cpu_model": "Opteron 6320",
+   "manufacturer": "AMD",
+   "architecture": "Abu Dhabi",
+   "memory_platform": null,
+   "source": "compute-specs-db",
+   "series": "amd-opteron-6300"
+  },
+  {
+   "cpu_model": "Opteron 6376",
+   "manufacturer": "AMD",
+   "architecture": "Abu Dhabi",
+   "memory_platform": null,
+   "source": "compute-specs-db",
+   "series": "amd-opteron-6300"
+  },
+  {
+   "cpu_model": "Opteron 6378",
+   "manufacturer": "AMD",
+   "architecture": "Abu Dhabi",
+   "memory_platform": null,
+   "source": "compute-specs-db",
+   "series": "amd-opteron-6300"
+  },
+  {
+   "cpu_model": "Ryzen 7 3800X",
+   "manufacturer": "AMD",
+   "architecture": "Matisse",
+   "memory_platform": "DDR4",
+   "source": "amd-ryzen-7-3800x",
+   "series": "amd-ryzen-3800x"
+  },
+  {
+   "cpu_model": "Bronze 3104",
+   "manufacturer": "Intel",
+   "architecture": "Skylake",
+   "memory_platform": "DDR4",
+   "source": "intel-bronze-3104",
+   "series": "intel-scalable-1"
+  },
+  {
+   "cpu_model": "E-2414",
+   "manufacturer": "Intel",
+   "architecture": "Raptor Lake",
+   "memory_platform": "DDR5",
+   "source": "intel-e-2414",
+   "series": "intel-e-2400"
+  },
+  {
+   "cpu_model": "E-2434",
+   "manufacturer": "Intel",
+   "architecture": "Raptor Lake",
+   "memory_platform": "DDR5",
+   "source": "intel-e-2434",
+   "series": "intel-e-2400"
+  },
+  {
+   "cpu_model": "E-2436",
+   "manufacturer": "Intel",
+   "architecture": "Raptor Lake",
+   "memory_platform": "DDR5",
+   "source": "intel-e-2436",
+   "series": "intel-e-2400"
+  },
+  {
+   "cpu_model": "E-2456",
+   "manufacturer": "Intel",
+   "architecture": "Raptor Lake",
+   "memory_platform": "DDR5",
+   "source": "intel-e-2456",
+   "series": "intel-e-2400"
+  },
+  {
+   "cpu_model": "E-2468",
+   "manufacturer": "Intel",
+   "architecture": "Raptor Lake",
+   "memory_platform": "DDR5",
+   "source": "intel-e-2468",
+   "series": "intel-e-2400"
+  },
+  {
+   "cpu_model": "E-2478",
+   "manufacturer": "Intel",
+   "architecture": "Raptor Lake",
+   "memory_platform": "DDR5",
+   "source": "intel-e-2478",
+   "series": "intel-e-2400"
+  },
+  {
+   "cpu_model": "E-2488",
+   "manufacturer": "Intel",
+   "architecture": "Raptor Lake",
+   "memory_platform": "DDR5",
+   "source": "intel-e-2488",
+   "series": "intel-e-2400"
+  },
+  {
+   "cpu_model": "E3-1270 v6",
+   "manufacturer": "Intel",
+   "architecture": "Kaby Lake",
+   "memory_platform": null,
+   "source": "intel-e3-1270-v6",
+   "series": "intel-e3-1270-v6"
+  },
+  {
+   "cpu_model": "E5-1650 v2",
+   "manufacturer": "Intel",
+   "architecture": "Ivy Bridge",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v2"
+  },
+  {
+   "cpu_model": "E5-2407 v2",
+   "manufacturer": "Intel",
+   "architecture": "Ivy Bridge",
+   "memory_platform": "DDR3",
+   "source": "intel-e5-2407-v2",
+   "series": "intel-e5-v2"
+  },
+  {
+   "cpu_model": "E5-2450",
+   "manufacturer": "Intel",
+   "architecture": "Sandy Bridge",
+   "memory_platform": "DDR3",
+   "source": "intel-e5-2450",
+   "series": "intel-e5"
+  },
+  {
+   "cpu_model": "E5-2450 v2",
+   "manufacturer": "Intel",
+   "architecture": "Ivy Bridge",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v2"
+  },
+  {
+   "cpu_model": "E5-2470 v2",
+   "manufacturer": "Intel",
+   "architecture": "Ivy Bridge",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v2"
+  },
+  {
+   "cpu_model": "E5-2609 v2",
+   "manufacturer": "Intel",
+   "architecture": "Ivy Bridge",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v2"
+  },
+  {
+   "cpu_model": "E5-2618L v3",
+   "manufacturer": "Intel",
+   "architecture": "Haswell",
+   "memory_platform": "DDR4",
+   "source": "intel-e5-2618l-v3",
+   "series": "intel-e5-v3"
+  },
+  {
+   "cpu_model": "E5-2618L v4",
+   "manufacturer": "Intel",
+   "architecture": "Broadwell",
+   "memory_platform": "DDR4",
+   "source": "intel-e5-2618l-v4",
+   "series": "intel-e5-v4"
+  },
+  {
+   "cpu_model": "E5-2620",
+   "manufacturer": "Intel",
+   "architecture": "Sandy Bridge",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-e5"
+  },
+  {
+   "cpu_model": "E5-2620 v2",
+   "manufacturer": "Intel",
+   "architecture": "Ivy Bridge",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v2"
+  },
+  {
+   "cpu_model": "E5-2620 v3",
+   "manufacturer": "Intel",
+   "architecture": "Haswell",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v3"
+  },
+  {
+   "cpu_model": "E5-2620 v4",
+   "manufacturer": "Intel",
+   "architecture": "Broadwell",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v4"
+  },
+  {
+   "cpu_model": "E5-2630 v2",
+   "manufacturer": "Intel",
+   "architecture": "Ivy Bridge",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v2"
+  },
+  {
+   "cpu_model": "E5-2630 v3",
+   "manufacturer": "Intel",
+   "architecture": "Haswell",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v3"
+  },
+  {
+   "cpu_model": "E5-2630 v4",
+   "manufacturer": "Intel",
+   "architecture": "Broadwell",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v4"
+  },
+  {
+   "cpu_model": "E5-2630L",
+   "manufacturer": "Intel",
+   "architecture": "Sandy Bridge",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-e5"
+  },
+  {
+   "cpu_model": "E5-2630L v2",
+   "manufacturer": "Intel",
+   "architecture": "Ivy Bridge",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v2"
+  },
+  {
+   "cpu_model": "E5-2637 v4",
+   "manufacturer": "Intel",
+   "architecture": "Broadwell",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v4"
+  },
+  {
+   "cpu_model": "E5-2640 0",
+   "manufacturer": "Intel",
+   "architecture": "Sandy Bridge",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-e5"
+  },
+  {
+   "cpu_model": "E5-2640 v2",
+   "manufacturer": "Intel",
+   "architecture": "Ivy Bridge",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v2"
+  },
+  {
+   "cpu_model": "E5-2640 v3",
+   "manufacturer": "Intel",
+   "architecture": "Haswell",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v3"
+  },
+  {
+   "cpu_model": "E5-2640 v4",
+   "manufacturer": "Intel",
+   "architecture": "Broadwell",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v4"
+  },
+  {
+   "cpu_model": "E5-2643 v2",
+   "manufacturer": "Intel",
+   "architecture": "Ivy Bridge",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v2"
+  },
+  {
+   "cpu_model": "E5-2650 v2",
+   "manufacturer": "Intel",
+   "architecture": "Ivy Bridge",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v2"
+  },
+  {
+   "cpu_model": "E5-2650 v3",
+   "manufacturer": "Intel",
+   "architecture": "Haswell",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v3"
+  },
+  {
+   "cpu_model": "E5-2650 v4",
+   "manufacturer": "Intel",
+   "architecture": "Broadwell",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v4"
+  },
+  {
+   "cpu_model": "E5-2650L",
+   "manufacturer": "Intel",
+   "architecture": "Sandy Bridge",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-e5"
+  },
+  {
+   "cpu_model": "E5-2650L v2",
+   "manufacturer": "Intel",
+   "architecture": "Ivy Bridge",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v2"
+  },
+  {
+   "cpu_model": "E5-2650L v3",
+   "manufacturer": "Intel",
+   "architecture": "Haswell",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v3"
+  },
+  {
+   "cpu_model": "E5-2650L v4",
+   "manufacturer": "Intel",
+   "architecture": "Broadwell",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v4"
+  },
+  {
+   "cpu_model": "E5-2658A v3",
+   "manufacturer": "Intel",
+   "architecture": "Haswell",
+   "memory_platform": "DDR4",
+   "source": "intel-e5-2658a-v3",
+   "series": "intel-e5-v3"
+  },
+  {
+   "cpu_model": "E5-2660",
+   "manufacturer": "Intel",
+   "architecture": "Sandy Bridge",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-e5"
+  },
+  {
+   "cpu_model": "E5-2660 v2",
+   "manufacturer": "Intel",
+   "architecture": "Ivy Bridge",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v2"
+  },
+  {
+   "cpu_model": "E5-2660 v3",
+   "manufacturer": "Intel",
+   "architecture": "Haswell",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v3"
+  },
+  {
+   "cpu_model": "E5-2660 v4",
+   "manufacturer": "Intel",
+   "architecture": "Broadwell",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v4"
+  },
+  {
+   "cpu_model": "E5-2665",
+   "manufacturer": "Intel",
+   "architecture": "Sandy Bridge",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-e5"
+  },
+  {
+   "cpu_model": "E5-2667 v3",
+   "manufacturer": "Intel",
+   "architecture": "Haswell",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v3"
+  },
+  {
+   "cpu_model": "E5-2670 0",
+   "manufacturer": "Intel",
+   "architecture": "Sandy Bridge",
+   "memory_platform": "DDR3",
+   "source": "intel-e5-2670-0",
+   "series": "intel-e5"
+  },
+  {
+   "cpu_model": "E5-2670 v2",
+   "manufacturer": "Intel",
+   "architecture": "Ivy Bridge",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v2"
+  },
+  {
+   "cpu_model": "E5-2670 v3",
+   "manufacturer": "Intel",
+   "architecture": "Haswell",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v3"
+  },
+  {
+   "cpu_model": "E5-2680 v2",
+   "manufacturer": "Intel",
+   "architecture": "Ivy Bridge",
+   "memory_platform": "DDR3",
+   "source": "intel-e5-2680-v2",
+   "series": "intel-e5-v2"
+  },
+  {
+   "cpu_model": "E5-2680 v3",
+   "manufacturer": "Intel",
+   "architecture": "Haswell",
+   "memory_platform": "DDR4",
+   "source": "intel-e5-2680-v3",
+   "series": "intel-e5-v3"
+  },
+  {
+   "cpu_model": "E5-2680 v4",
+   "manufacturer": "Intel",
+   "architecture": "Broadwell",
+   "memory_platform": "DDR4",
+   "source": "intel-e5-2680-v4",
+   "series": "intel-e5-v4"
+  },
+  {
+   "cpu_model": "E5-2683 v4",
+   "manufacturer": "Intel",
+   "architecture": "Broadwell",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v4"
+  },
+  {
+   "cpu_model": "E5-2687W v4",
+   "manufacturer": "Intel",
+   "architecture": "Broadwell",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v4"
+  },
+  {
+   "cpu_model": "E5-2690 v2",
+   "manufacturer": "Intel",
+   "architecture": "Ivy Bridge",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v2"
+  },
+  {
+   "cpu_model": "E5-2690 v3",
+   "manufacturer": "Intel",
+   "architecture": "Haswell",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v3"
+  },
+  {
+   "cpu_model": "E5-2690 v4",
+   "manufacturer": "Intel",
+   "architecture": "Broadwell",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v4"
+  },
+  {
+   "cpu_model": "E5-2695 v2",
+   "manufacturer": "Intel",
+   "architecture": "Ivy Bridge",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v2"
+  },
+  {
+   "cpu_model": "E5-2695 v3",
+   "manufacturer": "Intel",
+   "architecture": "Haswell",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v3"
+  },
+  {
+   "cpu_model": "E5-2697 v3",
+   "manufacturer": "Intel",
+   "architecture": "Haswell",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v3"
+  },
+  {
+   "cpu_model": "E5-2697 v4",
+   "manufacturer": "Intel",
+   "architecture": "Broadwell",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v4"
+  },
+  {
+   "cpu_model": "E5-2698 v3",
+   "manufacturer": "Intel",
+   "architecture": "Haswell",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v3"
+  },
+  {
+   "cpu_model": "E5-2698 v4",
+   "manufacturer": "Intel",
+   "architecture": "Broadwell",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-e5-v4"
+  },
+  {
+   "cpu_model": "E5520",
+   "manufacturer": "Intel",
+   "architecture": "Nehalem",
+   "memory_platform": "DDR3",
+   "source": "intel-5500-brief",
+   "series": "intel-5500"
+  },
+  {
+   "cpu_model": "E5620",
+   "manufacturer": "Intel",
+   "architecture": "Westmere",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-5600"
+  },
+  {
+   "cpu_model": "E5630",
+   "manufacturer": "Intel",
+   "architecture": "Westmere",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-5600"
+  },
+  {
+   "cpu_model": "E5645",
+   "manufacturer": "Intel",
+   "architecture": "Westmere",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-5600"
+  },
+  {
+   "cpu_model": "Gold 5115",
+   "manufacturer": "Intel",
+   "architecture": "Skylake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-1"
+  },
+  {
+   "cpu_model": "Gold 5118",
+   "manufacturer": "Intel",
+   "architecture": "Skylake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-1"
+  },
+  {
+   "cpu_model": "Gold 5120",
+   "manufacturer": "Intel",
+   "architecture": "Skylake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-1"
+  },
+  {
+   "cpu_model": "Gold 5215",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Gold 5218",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Gold 5218R",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Gold 5220",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Gold 5220R",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Gold 5222",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Gold 5320",
+   "manufacturer": "Intel",
+   "architecture": "Ice Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-3"
+  },
+  {
+   "cpu_model": "Gold 5418Y",
+   "manufacturer": "Intel",
+   "architecture": "Sapphire Rapids",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-4"
+  },
+  {
+   "cpu_model": "Gold 6126",
+   "manufacturer": "Intel",
+   "architecture": "Skylake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-1"
+  },
+  {
+   "cpu_model": "Gold 6130",
+   "manufacturer": "Intel",
+   "architecture": "Skylake",
+   "memory_platform": "DDR4",
+   "source": "intel-gold-6130",
+   "series": "intel-scalable-1"
+  },
+  {
+   "cpu_model": "Gold 6132",
+   "manufacturer": "Intel",
+   "architecture": "Skylake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-1"
+  },
+  {
+   "cpu_model": "Gold 6138",
+   "manufacturer": "Intel",
+   "architecture": "Skylake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-1"
+  },
+  {
+   "cpu_model": "Gold 6140",
+   "manufacturer": "Intel",
+   "architecture": "Skylake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-1"
+  },
+  {
+   "cpu_model": "Gold 6148",
+   "manufacturer": "Intel",
+   "architecture": "Skylake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-1"
+  },
+  {
+   "cpu_model": "Gold 6150",
+   "manufacturer": "Intel",
+   "architecture": "Skylake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-1"
+  },
+  {
+   "cpu_model": "Gold 6152",
+   "manufacturer": "Intel",
+   "architecture": "Skylake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-1"
+  },
+  {
+   "cpu_model": "Gold 6226",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Gold 6226R",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Gold 6230",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "intel-gold-6230",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Gold 6230R",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Gold 6238",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Gold 6238R",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Gold 6240",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Gold 6240R",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Gold 6242",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Gold 6248",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Gold 6248R",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Gold 6252",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Gold 6258R",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Gold 6314U",
+   "manufacturer": "Intel",
+   "architecture": "Ice Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-3"
+  },
+  {
+   "cpu_model": "Gold 6326",
+   "manufacturer": "Intel",
+   "architecture": "Ice Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-3"
+  },
+  {
+   "cpu_model": "Gold 6336Y",
+   "manufacturer": "Intel",
+   "architecture": "Ice Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-3"
+  },
+  {
+   "cpu_model": "Gold 6338",
+   "manufacturer": "Intel",
+   "architecture": "Ice Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-3"
+  },
+  {
+   "cpu_model": "Gold 6342",
+   "manufacturer": "Intel",
+   "architecture": "Ice Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-3"
+  },
+  {
+   "cpu_model": "Gold 6354",
+   "manufacturer": "Intel",
+   "architecture": "Ice Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-3"
+  },
+  {
+   "cpu_model": "Gold 6430",
+   "manufacturer": "Intel",
+   "architecture": "Sapphire Rapids",
+   "memory_platform": "DDR5",
+   "source": "intel-gold-6430",
+   "series": "intel-scalable-4"
+  },
+  {
+   "cpu_model": "Gold 6438Y+",
+   "manufacturer": "Intel",
+   "architecture": "Sapphire Rapids",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-4"
+  },
+  {
+   "cpu_model": "Gold 6442Y",
+   "manufacturer": "Intel",
+   "architecture": "Sapphire Rapids",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-4"
+  },
+  {
+   "cpu_model": "Gold 6448Y",
+   "manufacturer": "Intel",
+   "architecture": "Sapphire Rapids",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-4"
+  },
+  {
+   "cpu_model": "Gold 6530",
+   "manufacturer": "Intel",
+   "architecture": "Emerald Rapids",
+   "memory_platform": "DDR5",
+   "source": "intel-gold-6530",
+   "series": "intel-scalable-5"
+  },
+  {
+   "cpu_model": "L5630",
+   "manufacturer": "Intel",
+   "architecture": "Westmere",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-5600"
+  },
+  {
+   "cpu_model": "Platinum 8160",
+   "manufacturer": "Intel",
+   "architecture": "Skylake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-1"
+  },
+  {
+   "cpu_model": "Platinum 8352Y",
+   "manufacturer": "Intel",
+   "architecture": "Ice Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-3"
+  },
+  {
+   "cpu_model": "Platinum 8358P",
+   "manufacturer": "Intel",
+   "architecture": "Ice Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-3"
+  },
+  {
+   "cpu_model": "Platinum 8362",
+   "manufacturer": "Intel",
+   "architecture": "Ice Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-3"
+  },
+  {
+   "cpu_model": "Platinum 8368",
+   "manufacturer": "Intel",
+   "architecture": "Ice Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-3"
+  },
+  {
+   "cpu_model": "Platinum 8468",
+   "manufacturer": "Intel",
+   "architecture": "Sapphire Rapids",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-4"
+  },
+  {
+   "cpu_model": "Platinum 8480+",
+   "manufacturer": "Intel",
+   "architecture": "Sapphire Rapids",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-4"
+  },
+  {
+   "cpu_model": "Platinum 8480CL",
+   "manufacturer": "Intel",
+   "architecture": "Sapphire Rapids",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-4"
+  },
+  {
+   "cpu_model": "Platinum 9242",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "intel-platinum-9242",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Silver 4108",
+   "manufacturer": "Intel",
+   "architecture": "Skylake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-1"
+  },
+  {
+   "cpu_model": "Silver 4110",
+   "manufacturer": "Intel",
+   "architecture": "Skylake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-1"
+  },
+  {
+   "cpu_model": "Silver 4114",
+   "manufacturer": "Intel",
+   "architecture": "Skylake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-1"
+  },
+  {
+   "cpu_model": "Silver 4116",
+   "manufacturer": "Intel",
+   "architecture": "Skylake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-1"
+  },
+  {
+   "cpu_model": "Silver 4209T",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Silver 4210",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Silver 4210R",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Silver 4214",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Silver 4214R",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Silver 4216",
+   "manufacturer": "Intel",
+   "architecture": "Cascade Lake",
+   "memory_platform": "DDR4",
+   "source": "compute-specs-db",
+   "series": "intel-scalable-2"
+  },
+  {
+   "cpu_model": "Silver 4314",
+   "manufacturer": "Intel",
+   "architecture": "Ice Lake",
+   "memory_platform": "DDR4",
+   "source": "intel-silver-4314",
+   "series": "intel-scalable-3"
+  },
+  {
+   "cpu_model": "W-2125",
+   "manufacturer": "Intel",
+   "architecture": "Skylake",
+   "memory_platform": "DDR4",
+   "source": "intel-w-2125",
+   "series": "intel-w-2100"
+  },
+  {
+   "cpu_model": "X5560",
+   "manufacturer": "Intel",
+   "architecture": "Nehalem",
+   "memory_platform": "DDR3",
+   "source": "intel-5500-brief",
+   "series": "intel-5500",
+   "correction": "Upstream Codename 'Westmere-EP' corrected: Intel's 5500 series brief lists X5560 under Microarchitecture Nehalem."
+  },
+  {
+   "cpu_model": "X5570",
+   "manufacturer": "Intel",
+   "architecture": "Nehalem",
+   "memory_platform": "DDR3",
+   "source": "intel-5500-brief",
+   "series": "intel-5500"
+  },
+  {
+   "cpu_model": "X5650",
+   "manufacturer": "Intel",
+   "architecture": "Westmere",
+   "memory_platform": "DDR3",
+   "source": "intel-x5650",
+   "series": "intel-5600"
+  },
+  {
+   "cpu_model": "X5660",
+   "manufacturer": "Intel",
+   "architecture": "Westmere",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-5600"
+  },
+  {
+   "cpu_model": "X5675",
+   "manufacturer": "Intel",
+   "architecture": "Westmere",
+   "memory_platform": "DDR3",
+   "source": "compute-specs-db",
+   "series": "intel-5600"
+  },
+  {
+   "cpu_model": "Xeon Max 9462",
+   "manufacturer": "Intel",
+   "architecture": "Sapphire Rapids",
+   "memory_platform": "DDR5",
+   "source": "compute-specs-db",
+   "series": "intel-max"
+  },
+  {
+   "cpu_model": "Xeon Max 9480",
+   "manufacturer": "Intel",
+   "architecture": "Sapphire Rapids",
+   "memory_platform": "DDR5",
+   "source": "intel-max-9480",
+   "series": "intel-max"
+  },
+  {
+   "cpu_model": "i7-5960X",
+   "manufacturer": "Intel",
+   "architecture": "Haswell",
+   "memory_platform": "DDR4",
+   "source": "intel-i7-5960x",
+   "series": "intel-i7-5960x"
+  },
+  {
+   "cpu_model": "i9-13900K",
+   "manufacturer": "Intel",
+   "architecture": "Raptor Lake",
+   "memory_platform": null,
+   "source": "intel-i9-13900k",
+   "series": "intel-i9-13900k"
+  }
+ ]
+}

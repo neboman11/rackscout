@@ -1,4 +1,5 @@
-Third-party data notice: rackscout/data/cpu_specs.json contains validated CPU core counts derived from
+Third-party data notice: rackscout/data/cpu_specs.json contains validated CPU core counts, and
+rackscout/data/cpu_platforms.json contains CPU manufacturer/codename facts, derived from
 https://github.com/elokwentnie/compute-specs-db (commit 9b64d1770b9fea2b749e3ad599172ad0bd900f68, cpu_spec_validated.csv).
 Upstream license, reproduced verbatim:
 

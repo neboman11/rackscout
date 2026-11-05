@@ -14,6 +14,12 @@ The platform-era filter selects cataloged Dell 14G-era or newer hardware across 
 
 The Model and Selling platform pickers accept multiple selections. Each selection group is ORed, then ANDed with the other filters. Clear a group to remove that constraint. Shared URLs retain repeated `model` and `provider` parameters. Selling platform is independent of the server's OEM.
 
+CPU manufacturer, CPU architecture family and Memory platform are also multi-selects. Selections are ORed within a picker and ANDed across pickers; selected hardware filters exclude unknown values from both matches and leads. URLs retain repeated `cpu_manufacturer`, `cpu_architecture` and `memory_platform` parameters. CPU cells show manufacturer/family; RAM cells show DDR generation.
+
+Hardware platform metadata uses exact CPU model references, not chassis-generation guesses or nearby SKUs. Architecture names group platform suffixes into their broad family while retaining distinct families such as Rome and Milan. DDR generation comes from explicit listing evidence or an unambiguous CPU platform reference. CPUs supporting multiple DDR generations remain unknown without listing evidence; contradictory DDR claims also remain unknown. A DDR platform does not prove RAM is installed. Manual CPU edits cannot inherit an unrelated source configuration's memory type. References are packaged locally; filtering adds no scraper traffic.
+
+The packaged platform catalog contains 223 exact CPU references across 24 broad architecture families, with pinned MIT dataset attribution and vendor evidence recorded in `rackscout/data/cpu_platforms.json`. Memory compatibility is verified by product series rather than inferred from codename alone. Unknown or unverified memory support stays unknown.
+
 Catalog metadata establishes only cited chassis properties: vendor, generation, rack height and socket capacity. It never proves installed CPU count, RAM, bay backplane or PSU inclusion. Generic Supermicro motherboard/chassis descriptions do not establish a complete system model. Unknown values remain unknown.
 
 ## Source coverage and trust
@@ -53,6 +59,8 @@ UI releases version the JavaScript and stylesheet URLs in `rackscout/static/inde
 RAM and storage distinguish **Not included** (explicit absence), **Not stated** (missing evidence) and **Conflicting claims**. Missing details never imply zero RAM or diskless storage. Coordinated exclusions such as “No HDD, RAM, NC” preserve the original evidence and establish missing RAM/storage without guessing what an unknown acronym means. Explicitly missing operating essentials remain excluded from both matches and leads.
 
 Shipping amounts are source quotes with an unconfirmed destination, not delivered prices for your postcode. Browser delivery preferences do not obtain a new quote when the source cannot provide one. Unknown shipping is not zero; unknown totals cannot satisfy a maximum-total filter as matches. Tax and import charges are excluded.
+
+When item price is known but shipping is not, the headline shows **$740.95 + shipping**, or **From $200.00 + shipping** for a starting price. The API total remains null: this display does not assume free shipping or change sorting, maximum-total eligibility or quote confidence.
 
 ## Manual configurations
 
@@ -127,7 +135,7 @@ An unset dataset path leaves existing database references unchanged; a fresh dat
 `Dockerfile` uses the Playwright 1.64.1 Python image matching the pinned dependency. The runtime is non-root; production workloads use a read-only root filesystem, writable temporary storage, no Kubernetes API token and no-new-privileges. No host credentials or Docker socket are mounted.
 
 ```sh
-podman build -t localhost/rackscout:0.8.0 .
+podman build -t localhost/rackscout:0.9.0 .
 ```
 
 `compose.yaml` provides PostgreSQL, migration, web and on-demand collection. Export a strong `POSTGRES_PASSWORD` before starting it. Web binds to localhost.
@@ -194,3 +202,5 @@ Deploy only a published immutable image reference. Verify `/ready`, collection J
 Upgrading from a release without manual-row collector guards requires a clean cutover. The chart uses Recreate for web/worker; drain old-image CronJob collectors too before enabling manual writes. Do not let an old collector run against newly created manual rows.
 
 Release 0.8.0 migration 006 changes source identity to `(provider, item_id)` and preserves existing listing/configuration IDs, manual entries and history. It takes the collector lock before the cutover. Drain old collectors, retain Recreate, back up PostgreSQL, and migrate before starting the new release. Old releases reject the new schema; do not roll back to an old image after migration without a deliberate database recovery plan.
+
+Release 0.9.0 migration 007 adds CPU platform references and derived configuration keys/memory types, including existing manual configurations. Reclassification does not revise saved hardware, prices, notes, history or quote timestamps. As with other schema upgrades, keep the clean cutover and PostgreSQL backup precautions above; no collection is needed to classify existing inventory.

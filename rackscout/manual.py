@@ -20,7 +20,7 @@ from typing import Any
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import domain, providers
+from . import domain, hardware_platforms, providers
 
 MAX_MANUAL_PER_LISTING = 100
 LOCK_TIMEOUT = "5s"
@@ -48,11 +48,12 @@ _CPU_SENTINEL_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Stored configuration columns captured in a baseline and materialized for manual rows.
+# Stored configuration columns captured in a baseline and materialized for manual rows. Baselines captured
+# before the memory statement columns existed lack them and never borrow the source's current values.
 VALUE_COLUMNS = ("model", "cpu_model", "cpu_key", "cpu_model_state", "cpu_count", "cpu_count_state", "total_cores",
                  "ram_gb", "ram_state", "drive_bays", "bays_state", "drive_size", "size_state", "storage_state",
                  "storage_conf", "hardware_state", "damage", "price_kind", "item_price", "shipping_price",
-                 "shipping_context")
+                 "shipping_context", "memory_type", "memory_type_conflict")
 
 # Evidence ``field`` names written by the domain builder for each editable field.
 _EVIDENCE_FIELD = {"model": "model", "cpu_model": "cpu_model", "cpu_count": "cpu_count", "total_cores": "total_cores",
@@ -303,6 +304,15 @@ def _manual_evidence(name: str, value: Any, stamp: str) -> dict[str, Any]:
             "text": domain.clean_text(f"Manually entered {name}: {shown} ({stamp})"), "source_url": None}
 
 
+def _same_cpu(entered: str | None, base: str | None) -> bool:
+    """Whether an entered CPU model names the base option's CPU: the same exact reference SKU (which
+    rejects contradictory manufacturers) when both resolve, otherwise unchanged normalized text."""
+    a, b = hardware_platforms.reference_key(entered), hardware_platforms.reference_key(base)
+    if a is not None and b is not None:
+        return a == b
+    return domain.normalize_cpu_key(entered) == domain.normalize_cpu_key(base)
+
+
 def _materialize(baseline: dict[str, Any], write: ManualWrite, stamps: dict[str, str],
                  price_stamp: str | None) -> dict[str, Any]:
     """Effective column values for a manual row from its baseline and explicit overrides."""
@@ -328,6 +338,12 @@ def _materialize(baseline: dict[str, Any], write: ManualWrite, stamps: dict[str,
         ("cpu_model" in fields and domain.normalize_cpu_key(fields["cpu_model"]) != domain.normalize_cpu_key(base["cpu_model"]))
         or ("cpu_count" in fields and fields["cpu_count"] != base["cpu_count"])
     )
+    # The base option's explicit memory type, as frozen in the baseline, describes its own CPU's platform
+    # only: a different (or cleared) CPU never inherits it and falls back to that CPU's reference platform.
+    same_cpu = "cpu_model" not in fields or _same_cpu(fields["cpu_model"], base["cpu_model"])
+    v["memory_type"] = base.get("memory_type") if same_cpu else None
+    v["memory_type_conflict"] = base.get("memory_type_conflict") is True and same_cpu
+    v["cpu_platform_key"] = hardware_platforms.reference_key(v["cpu_model"])
     if "total_cores" in fields:
         v["total_cores"] = fields["total_cores"]
     elif cpu_changed:
@@ -511,11 +527,11 @@ def _manual_data(baseline: dict[str, Any], write: ManualWrite, previous: dict[st
     return data, stamps, price_stamp
 
 
-_ROW_COLUMNS = VALUE_COLUMNS + ("evidence", "warnings", "exclusions", "essential_states")
+_ROW_COLUMNS = VALUE_COLUMNS + ("cpu_platform_key", "evidence", "warnings", "exclusions", "essential_states")
 
 
 def _row_params(values: dict[str, Any]) -> dict[str, Any]:
-    params = {c: values[c] for c in VALUE_COLUMNS}
+    params = {c: values[c] for c in VALUE_COLUMNS + ("cpu_platform_key",)}
     for c in ("evidence", "warnings", "exclusions", "essential_states"):
         params[c] = Jsonb(values[c])
     return params

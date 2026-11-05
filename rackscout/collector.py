@@ -13,7 +13,7 @@ from typing import Any
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import db, providers, retail_sources
+from . import db, domain, hardware_platforms, providers, retail_sources
 from .config import DESCRIPTION_HOST, EBAY_HOST, Settings
 from .sources import HttpFetcher, IndexSnapshot, SourceBlocked, SourceError
 
@@ -29,6 +29,56 @@ DESCRIPTION_REFRESH = timedelta(hours=24)
 RECOMPUTE_COLUMNS = "id, provider, source_record, description_claims, page_claims, page_status, quote_status"
 # Retailer native product ids: ASCII digits only (str.isdigit also accepts other Unicode digits).
 NATIVE_ID_RE = re.compile(r"[0-9]{1,20}")
+# Explicit memory statements of one source configuration. eBay index field: exactly DDR3/DDR4/DDR5 (any
+# case) apart from surrounding spaces/tabs. Retailers: the native variant's own memory-named labels
+# (domain.RAM_LABEL_RE: Memory, RAM, Memory Size, DIMMs, ...) or, without one, the installed text's
+# memory-named fields; capacity/maximum statements, descriptions and marketing text never count.
+# Module generations: DDRn, DDR3L, PCn, PC3L. Several distinct generations are a conflict.
+_INDEX_MEMORY_TYPE_RE = re.compile(r"[ \t]*(ddr[345])[ \t]*", re.IGNORECASE)
+_MEMORY_GENERATION_RE = re.compile(r"(?<![a-z0-9])(?:ddr|pc)([345])l?(?![a-z0-9])", re.IGNORECASE)
+_LABELLED_FIELD_RE = re.compile(r"\s*([^:]{1,40}?)\s*:\s*(.+)", re.DOTALL)
+
+
+def _memory_generation(texts: list[str]) -> tuple[str | None, bool]:
+    found = {m.group(1) for text in texts for m in _MEMORY_GENERATION_RE.finditer(text)}
+    if len(found) > 1:
+        return None, True
+    return (f"DDR{found.pop()}" if found else None), False
+
+
+def listing_memory(provider: str, record: dict[str, Any], variant_key: str) -> tuple[str | None, bool]:
+    """(memory type, conflicting) explicitly stated for one source configuration.
+
+    The type is set only for exactly one stated generation; ``conflicting`` when the configuration's own
+    memory statement names several. Neither is ever inferred from CPU, chassis or capacity text.
+    """
+    if provider == providers.EBAY:
+        raw = record.get("memory_type")
+        if not isinstance(raw, str):
+            return None, False
+        if m := _INDEX_MEMORY_TYPE_RE.fullmatch(raw):
+            return m.group(1).upper(), False
+        return None, _memory_generation([raw])[1]
+    retail = record.get("retail")
+    if not isinstance(retail, dict):
+        return None, False
+    for v in retail.get("variants") or []:
+        if isinstance(v, dict) and variant_key and v.get("variant_id") == variant_key:
+            named = [text for name, text in (v.get("labels") or {}).items()
+                     if isinstance(name, str) and isinstance(text, str) and domain.RAM_LABEL_RE.search(name)]
+            if named:
+                # The option's own memory replaces the product's installed memory, generation named or not.
+                return _memory_generation(named)
+            break
+    installed = retail.get("installed_text")
+    if not isinstance(installed, str):
+        return None, False
+    fields = []
+    for segment in domain.RETAIL_SEGMENT_RE.split(installed):
+        m = _LABELLED_FIELD_RE.fullmatch(segment) if segment else None
+        if m and domain.RAM_LABEL_RE.search(m.group(1)) and not domain.CAPACITY_RE.search(segment):
+            fields.append(m.group(2))
+    return _memory_generation(fields)
 
 
 def _json(value: Any) -> Jsonb:
@@ -118,17 +168,21 @@ def recompute(conn: psycopg.Connection, row: dict[str, Any], catalog: dict[str, 
         keys.append(c["variant_key"])
         params = {**c, "listing_id": row["id"], "evidence": _json(c["evidence"]), "warnings": _json(c["warnings"]),
                   "exclusions": _json(c["exclusions"]), "essential_states": _json(c["essential_states"]),
-                  "source_quote": _json(c["source_quote"]) if c["source_quote"] is not None else None}
+                  "source_quote": _json(c["source_quote"]) if c["source_quote"] is not None else None,
+                  "cpu_platform_key": hardware_platforms.reference_key(c["cpu_model"])}
+        params["memory_type"], params["memory_type_conflict"] = listing_memory(row["provider"], record, c["variant_key"])
         cid = conn.execute(
             """INSERT INTO configurations (listing_id, variant_key, variant_id, variant_label, active, model, cpu_model, cpu_key,
                  cpu_model_state, cpu_count, cpu_count_state, total_cores, ram_gb, ram_state, drive_bays, bays_state, drive_size,
                  size_state, storage_state, storage_conf, hardware_state, damage, price_kind, item_price, shipping_price, currency,
-                 shipping_context, evidence, warnings, exclusions, essential_states, source_quote, observed_at)
+                 shipping_context, evidence, warnings, exclusions, essential_states, source_quote, cpu_platform_key, memory_type,
+                 memory_type_conflict, observed_at)
                VALUES (%(listing_id)s, %(variant_key)s, %(variant_id)s, %(variant_label)s, true, %(model)s, %(cpu_model)s, %(cpu_key)s,
                  %(cpu_model_state)s, %(cpu_count)s, %(cpu_count_state)s, %(total_cores)s, %(ram_gb)s, %(ram_state)s, %(drive_bays)s,
                  %(bays_state)s, %(drive_size)s, %(size_state)s, %(storage_state)s, %(storage_conf)s, %(hardware_state)s, %(damage)s,
                  %(price_kind)s, %(item_price)s, %(shipping_price)s, %(currency)s, %(shipping_context)s, %(evidence)s, %(warnings)s,
-                 %(exclusions)s, %(essential_states)s, %(source_quote)s, now())
+                 %(exclusions)s, %(essential_states)s, %(source_quote)s, %(cpu_platform_key)s, %(memory_type)s,
+                 %(memory_type_conflict)s, now())
                ON CONFLICT (listing_id, variant_key) DO UPDATE SET variant_id = EXCLUDED.variant_id,
                  variant_label = EXCLUDED.variant_label, active = true, model = EXCLUDED.model, cpu_model = EXCLUDED.cpu_model,
                  cpu_key = EXCLUDED.cpu_key, cpu_model_state = EXCLUDED.cpu_model_state, cpu_count = EXCLUDED.cpu_count,
@@ -140,6 +194,8 @@ def recompute(conn: psycopg.Connection, row: dict[str, Any], catalog: dict[str, 
                  currency = EXCLUDED.currency, shipping_context = EXCLUDED.shipping_context, evidence = EXCLUDED.evidence,
                  warnings = EXCLUDED.warnings, exclusions = EXCLUDED.exclusions,
                  essential_states = EXCLUDED.essential_states, source_quote = EXCLUDED.source_quote,
+                 cpu_platform_key = EXCLUDED.cpu_platform_key, memory_type = EXCLUDED.memory_type,
+                 memory_type_conflict = EXCLUDED.memory_type_conflict,
                  revision = configurations.revision + CASE WHEN
                    (configurations.active, configurations.variant_id, configurations.variant_label,
                     configurations.model, configurations.cpu_model, configurations.cpu_key, configurations.cpu_model_state,
@@ -149,7 +205,8 @@ def recompute(conn: psycopg.Connection, row: dict[str, Any], catalog: dict[str, 
                     configurations.storage_conf, configurations.hardware_state, configurations.damage,
                     configurations.price_kind, configurations.item_price, configurations.shipping_price,
                     configurations.shipping_context, configurations.evidence, configurations.warnings,
-                    configurations.exclusions, configurations.essential_states)
+                    configurations.exclusions, configurations.essential_states, configurations.memory_type,
+                    configurations.memory_type_conflict)
                    IS DISTINCT FROM
                    (EXCLUDED.active, EXCLUDED.variant_id, EXCLUDED.variant_label,
                     EXCLUDED.model, EXCLUDED.cpu_model, EXCLUDED.cpu_key, EXCLUDED.cpu_model_state,
@@ -159,7 +216,8 @@ def recompute(conn: psycopg.Connection, row: dict[str, Any], catalog: dict[str, 
                     EXCLUDED.storage_conf, EXCLUDED.hardware_state, EXCLUDED.damage,
                     EXCLUDED.price_kind, EXCLUDED.item_price, EXCLUDED.shipping_price,
                     EXCLUDED.shipping_context, EXCLUDED.evidence, EXCLUDED.warnings,
-                    EXCLUDED.exclusions, EXCLUDED.essential_states)
+                    EXCLUDED.exclusions, EXCLUDED.essential_states, EXCLUDED.memory_type,
+                    EXCLUDED.memory_type_conflict)
                    THEN 1 ELSE 0 END, observed_at = now()
                WHERE configurations.origin = 'source'
                RETURNING id""",

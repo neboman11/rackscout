@@ -14,6 +14,9 @@ const DEFAULTS = {
   min_bays: '4',
   drive_size: '',
   cpu_count: '',
+  cpu_manufacturer: [],
+  cpu_architecture: [],
+  memory_platform: [],
   max_total: '',
   diskless: 'true',
   hide_damaged: 'true',
@@ -28,6 +31,12 @@ const SELECT_KEYS = ['vendor', 'generation', 'height', 'min_ram', 'min_bays', 'd
 const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 +\-]{0,59}$/;
 const MAX_MODELS = 100;
 const CHECK_KEYS = ['diskless', 'hide_damaged', 'modern_only', 'confirmed_only', 'include_leads'];
+const HARDWARE_FILTERS = [
+  { key: 'cpu_manufacturer', facet: 'cpu_manufacturers', title: 'CPU manufacturer', all: 'All manufacturers' },
+  { key: 'cpu_architecture', facet: 'cpu_architectures', title: 'CPU architecture family', all: 'All families' },
+  { key: 'memory_platform', facet: 'memory_platforms', title: 'Memory platform', all: 'All memory platforms' },
+];
+const MULTI_KEYS = ['model', 'provider', ...HARDWARE_FILTERS.map(filter => filter.key)];
 
 // Used only when /api/facets is unavailable; the backend facets are authoritative.
 const FALLBACK_VENDORS = ['Dell', 'HPE', 'Supermicro', 'Lenovo', 'Cisco'];
@@ -52,6 +61,9 @@ let facetData = {
   model_vendors: FALLBACK_MODEL_VENDORS,
   generations_by_vendor: { Dell: [14], HPE: [10], Supermicro: [11], Lenovo: [1], Cisco: [5] },
   generation_labels: {},
+  cpu_manufacturers: ['Intel', 'AMD'],
+  cpu_architectures: [],
+  memory_platforms: ['DDR3', 'DDR4', 'DDR5'],
 };
 const PAGE_SIZE = 50;
 const SEARCH_DELAY_MS = 350;
@@ -201,7 +213,7 @@ function safeBenchmarkUrl(value) {
 }
 
 function cpuSpecSource(spec) {
-  const href = safeUrl(spec.source_url, ['github.com', 'www.intel.com', 'intel.com', 'www.amd.com', 'amd.com']);
+  const href = safeUrl(spec.source_url, ['github.com', 'raw.githubusercontent.com', 'www.intel.com', 'intel.com', 'www.amd.com', 'amd.com']);
   const text = spec.provider || 'CPU specification source';
   return href ? externalLink(href, text) : el('span', { text });
 }
@@ -248,7 +260,7 @@ function readStateFromUrl() {
   const params = new URLSearchParams(window.location.search);
   const next = { ...DEFAULTS };
   for (const key of Object.keys(DEFAULTS)) {
-    if (!['model', 'provider'].includes(key) && params.has(key)) next[key] = params.get(key);
+    if (!MULTI_KEYS.includes(key) && params.has(key)) next[key] = params.get(key);
   }
   for (const key of CHECK_KEYS) {
     next[key] = next[key] === 'false' ? 'false' : next[key] === 'true' ? 'true' : DEFAULTS[key];
@@ -264,6 +276,7 @@ function readStateFromUrl() {
   next.q = next.q.slice(0, 200);
   next.model = normalizeModels(params.getAll('model'));
   next.provider = normalizeProviders(params.getAll('provider'));
+  for (const filter of HARDWARE_FILTERS) next[filter.key] = normalizeModels(params.getAll(filter.key));
   if (!next.vendor) next.generation = '';
   if (next.max_total !== '' && !MAX_TOTAL_PATTERN.test(next.max_total)) next.max_total = '';
   return next;
@@ -294,7 +307,7 @@ function buildParams(includePage) {
   const params = new URLSearchParams();
   for (const key of Object.keys(DEFAULTS)) {
     if (key === 'page') continue;
-    if (key === 'model' || key === 'provider') {
+    if (MULTI_KEYS.includes(key)) {
       for (const name of state[key]) params.append(key, name);
       continue;
     }
@@ -351,6 +364,31 @@ function fillProviders(selected) {
   updateProviderSummary();
 }
 
+function selectedHardware(key) {
+  return [...$(key + '-options').querySelectorAll('input:checked')].map(box => box.value);
+}
+
+function updateHardwareSummary(filter) {
+  const selected = selectedHardware(filter.key);
+  $(filter.key + '-count').textContent = selected.length ? selected.length + ' selected' : filter.all;
+  $(filter.key + '-names').textContent = selected.join(', ');
+  $(filter.key + '-clear').disabled = selected.length === 0;
+}
+
+function fillHardware(filter, selected = state[filter.key]) {
+  const choices = [...new Set([...selected, ...(facetData[filter.facet] || [])])];
+  $(filter.key + '-options').replaceChildren(
+    el('legend', { className: 'sr-only', text: filter.title }),
+    ...choices.map((value, index) => {
+      const id = filter.key + '-opt-' + index;
+      const box = el('input', { attrs: { type: 'checkbox', id, value } });
+      box.checked = selected.includes(value);
+      return el('label', { className: 'multi-option', attrs: { for: id } }, [box, el('span', { text: value })]);
+    }),
+  );
+  updateHardwareSummary(filter);
+}
+
 function selectedModels() {
   return [...$('model-options').querySelectorAll('input[type="checkbox"]:checked')].map(box => box.value);
 }
@@ -404,6 +442,7 @@ function fillVendors(value) {
 
 function applyStateToForm() {
   fillProviders(state.provider);
+  for (const filter of HARDWARE_FILTERS) fillHardware(filter);
   fillVendors(state.vendor);
   rebuildDependents(state.vendor, state.model, state.generation);
   for (const key of SELECT_KEYS) {
@@ -429,6 +468,7 @@ function readFormIntoState() {
   for (const key of SELECT_KEYS) state[key] = $(key).value;
   state.model = selectedModels();
   state.provider = selectedProviders();
+  for (const filter of HARDWARE_FILTERS) state[filter.key] = selectedHardware(filter.key);
   for (const key of CHECK_KEYS) state[key] = $(key).checked ? 'true' : 'false';
   state.q = $('q').value.trim().slice(0, 200);
   state.sort = $('sort').value;
@@ -447,6 +487,9 @@ function onFilterChanged(event) {
   if (event.target.id === 'vendor') rebuildDependents($('vendor').value, [], '');
   if (event.target.closest && event.target.closest('#model-options')) updateModelSummary();
   if (event.target.closest && event.target.closest('#provider-options')) updateProviderSummary();
+  for (const filter of HARDWARE_FILTERS) {
+    if (event.target.closest && event.target.closest('#' + filter.key + '-options')) updateHardwareSummary(filter);
+  }
   const typing = event.target.matches('input[type="text"], input[type="search"]');
   debounceTimer = window.setTimeout(() => {
     const previousPage = state.page;
@@ -460,7 +503,8 @@ function onFilterChanged(event) {
 
 function resetFilters() {
   window.clearTimeout(debounceTimer);
-  state = { ...DEFAULTS, model: [], provider: [] };
+  state = { ...DEFAULTS };
+  for (const key of MULTI_KEYS) state[key] = [];
   applyStateToForm();
   pushUrl();
   loadListings();
@@ -577,7 +621,6 @@ function buildGroup(title, total, description, items, isLeads) {
 }
 
 function buildRow(item) {
-  const total = priceText(item, item.quoted_total);
   const nameButton = el('button', {
     className: 'name',
     text: modelTitle(item),
@@ -592,6 +635,7 @@ function buildRow(item) {
   const cpuCell = el('td', null, [
     document.createTextNode(item.cpu_model ? (item.cpu_count == null ? '?' : item.cpu_count) + '× ' + item.cpu_model : 'CPU unknown'),
     small(coreSummary(item) + claimTag(item)),
+    small((item.cpu_manufacturer || 'Manufacturer unknown') + ' · ' + (item.cpu_architecture || 'Family unknown')),
   ]);
 
   const socketCell = el('td', null, [
@@ -603,6 +647,7 @@ function buildRow(item) {
   const ramCell = el('td', { className: 'mono' }, [
     document.createTextNode(ramDisplay(item)),
     ramNote ? small(ramNote) : null,
+    small(item.memory_platform ? item.memory_platform + (item.memory_platform_source === 'cpu_reference' ? ' platform' : '') : 'DDR platform unknown'),
   ]);
 
   const baysText = item.drive_bays == null ? 'Unknown' : item.drive_bays + ' × ' + driveSizeLabel(item.drive_size, false);
@@ -648,6 +693,15 @@ function priceText(item, value) {
   return offerOf(item).starting ? money + '+' : money;
 }
 
+function priceHeadline(item) {
+  const total = priceText(item, item.quoted_total);
+  if (total) return total;
+  const base = formatMoney(item.item_price);
+  if (!base) return 'Price unknown';
+  const shipping = formatMoney(item.shipping_price);
+  return (offerOf(item).starting ? 'From ' : '') + base + ' + ' + (shipping ? shipping + ' shipping' : 'shipping');
+}
+
 function retailerQuote(item) {
   return !!item.quote && ['retailer_catalog', 'retailer_product'].includes(item.quote.method);
 }
@@ -678,15 +732,11 @@ function offerExplanation(item) {
 // Aria text for a price: states starting / historical meaning, not only the number.
 function priceAria(item) {
   const offer = offerOf(item);
-  const total = formatMoney(item.quoted_total);
-  const itemPrice = formatMoney(item.item_price);
-  if (offer.kind === 'manual_configuration') return (total || 'total unknown') + ', price entered by you, not independently verified';
-  if (offer.kind === 'historical_configuration') return total ? 'historical quote ' + total + ', not current' : 'historical quote, total unknown';
-  if (offer.starting) {
-    if (total) return 'starting price ' + total + ' or more, configuration not verified';
-    return 'total unknown' + (itemPrice ? ', item price starting at ' + itemPrice + ', ' + shippingText(item) : '');
-  }
-  return total || 'total unknown';
+  const headline = priceHeadline(item);
+  if (offer.kind === 'manual_configuration') return headline + ', price entered by you, not independently verified';
+  if (offer.kind === 'historical_configuration') return 'historical quote ' + headline + ', not current';
+  if (offer.starting) return headline + ', starting price, configuration not verified';
+  return headline;
 }
 
 function manualFields(item) {
@@ -805,10 +855,12 @@ function priceCell(item) {
   const cell = el('td', { className: 'money' });
   cell.append(
     el('span', { className: 'sr-only', text: priceAria(item) }),
-    el('span', { text: total || 'Total unknown', attrs: { 'aria-hidden': 'true' } }),
+    el('span', { text: priceHeadline(item), attrs: { 'aria-hidden': 'true' } }),
   );
   const line = itemPriceLine(item);
-  cell.append(small(line || 'No price data'));
+  cell.append(small(!total && formatMoney(item.item_price)
+    ? (formatMoney(item.shipping_price) ? 'Tax excluded' : 'Shipping not quoted · tax excluded')
+    : line || 'No price data'));
   const headline = offerHeadline(item);
   if (headline) cell.append(el('small', { className: 'offer-flag offer-' + offerOf(item).kind, text: headline }));
   return cell;
@@ -828,6 +880,11 @@ function applyFacets(facets) {
   if (facets.model_vendors && typeof facets.model_vendors === 'object') next.model_vendors = facets.model_vendors;
   if (facets.generations_by_vendor && typeof facets.generations_by_vendor === 'object') next.generations_by_vendor = facets.generations_by_vendor;
   next.generation_labels = facets.generation_labels && typeof facets.generation_labels === 'object' ? facets.generation_labels : {};
+  for (const filter of HARDWARE_FILTERS) {
+    if (Array.isArray(facets[filter.facet])) {
+      next[filter.facet] = normalizeModels(facets[filter.facet]);
+    }
+  }
   facetData = next;
 }
 
@@ -838,6 +895,7 @@ async function loadFacets() {
     applyFacets(facets);
     const vendor = $('vendor').value;
     fillProviders(selectedProviders());
+    for (const filter of HARDWARE_FILTERS) fillHardware(filter, selectedHardware(filter.key));
     fillVendors(vendor);
     rebuildDependents(vendor, selectedModels(), $('generation').value);
   } catch (error) {
@@ -1292,7 +1350,6 @@ function dlRow(list, term, value) {
 function renderDetail(item) {
   $('detail-title').textContent = modelTitle(item);
   const badge = hardwareBadge(item);
-  const total = priceText(item, item.quoted_total);
   const itemPrice = priceText(item, item.item_price);
   const shipping = formatMoney(item.shipping_price);
   const nodes = [];
@@ -1305,7 +1362,7 @@ function renderDetail(item) {
     item.origin === 'manual' ? el('span', { className: 'badge manual', text: 'Manual configuration — entered by you' }) : null,
   ]);
   nodes.push(states);
-  nodes.push(el('div', { className: 'detail-price', text: total || 'Total unknown' }));
+  nodes.push(el('div', { className: 'detail-price', text: priceHeadline(item) }));
   const priceNotes = [];
   priceNotes.push(itemPrice ? itemPrice + ' item + ' + (shipping ? shipping + ' quoted shipping' : 'shipping unknown') : 'Item price unknown');
   priceNotes.push('tax excluded');
@@ -1334,6 +1391,11 @@ function renderDetail(item) {
   dlRow(list, 'Platform era', item.target_era === true ? 'Dell 14G-era or newer comparable' : item.target_era === false ? 'Older than the target era' : 'Unknown');
   dlRow(list, 'Condition', item.condition || 'Unknown');
   dlRow(list, 'Selling platform', item.platform || providerName(item.provider || 'PerUnitPrice'));
+  dlRow(list, 'CPU manufacturer', item.cpu_manufacturer || 'Unknown');
+  dlRow(list, 'CPU architecture family', item.cpu_architecture || 'Unknown');
+  dlRow(list, 'Memory platform', item.memory_platform
+    ? item.memory_platform + (item.memory_platform_source === 'cpu_reference' ? ' · CPU model reference' : item.memory_platform_source === 'listing' ? ' · listing claim' : '')
+    : 'Unknown');
   dlRow(list, 'Detail check', detailStatusLabel(item.detail_status));
   dlRow(list, item.provider && item.provider !== 'PerUnitPrice' ? 'Source observation' : 'Source updated', formatDate(item.source_updated_at) || 'Unknown');
   dlRow(list, 'Last seen', formatDate(item.last_seen_at) || 'Unknown');
@@ -1354,6 +1416,13 @@ function renderDetail(item) {
   const siblings = siblingsSection();
   if (siblings) nodes.push(siblings);
   nodes.push(cpuSpecSection(item));
+  if (item.hardware_reference) {
+    nodes.push(el('section', { className: 'benchmark-detail' }, [
+      el('h3', { text: 'Hardware platform reference' }),
+      el('p', { text: 'CPU family and compatible DDR platform are model references, not independent verification of installed parts. Multiple supported DDR generations stay unknown unless the listing specifies one.' }),
+      cpuSpecSource(item.hardware_reference),
+    ]));
+  }
   nodes.push(benchmarkSection(item));
   nodes.push(evidenceSection(item));
   if (item.origin === 'manual' && view && view.manual && view.manual.original) nodes.push(originalSection(view.manual.original));
@@ -2521,6 +2590,24 @@ function init() {
     $('provider-picker').querySelector('summary').focus();
     onFilterChanged(event);
   });
+  for (const filter of HARDWARE_FILTERS) {
+    const picker = $(filter.key + '-picker');
+    $(filter.key + '-clear').addEventListener('click', event => {
+      for (const box of $(filter.key + '-options').querySelectorAll('input:checked')) box.checked = false;
+      updateHardwareSummary(filter);
+      picker.querySelector('summary').focus();
+      onFilterChanged(event);
+    });
+    picker.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && picker.open) {
+        picker.open = false;
+        picker.querySelector('summary').focus();
+      }
+    });
+    document.addEventListener('click', event => {
+      if (picker.open && !picker.contains(event.target)) picker.open = false;
+    });
+  }
   document.addEventListener('click', event => {
     const picker = $('provider-picker');
     if (picker.open && !picker.contains(event.target)) picker.open = false;

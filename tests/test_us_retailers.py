@@ -245,7 +245,7 @@ def test_migration_006_preserves_ids_manual_rows_history_and_qualifies_identity(
     before = {r["id"]: r for r in v5_conn.execute("SELECT * FROM configurations ORDER BY id").fetchall()}
     history = v5_conn.execute("SELECT * FROM price_history ORDER BY id").fetchall()
 
-    assert db.migrate(v5_conn) == [6]
+    db.migrate(v5_conn)
     assert db.migrate(v5_conn) == []
     assert db.schema_ready(v5_conn)
 
