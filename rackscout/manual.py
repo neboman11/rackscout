@@ -210,6 +210,20 @@ def parse_write(payload: Any) -> ManualWrite:
     return ManualWrite(revision, label, notes, fields, price_confirmed)
 
 
+def parse_sold(payload: Any) -> bool:
+    """Validate a sold-mark body (exactly ``{"sold": <boolean>}``) before any database access."""
+    if not isinstance(payload, dict):
+        raise ManualValidationError("Request body must be a JSON object")
+    for key in payload:
+        if key != "sold":
+            raise _invalid(_safe_key(key), f"{_safe_key(key)} is not an accepted property")
+    if "sold" not in payload:
+        raise _invalid("sold", "sold is required")
+    if not isinstance(payload["sold"], bool):
+        raise _invalid("sold", "sold must be true or false")
+    return payload["sold"]
+
+
 # ---------------------------------------------------------------------------
 # Serialization helpers
 # ---------------------------------------------------------------------------
@@ -677,3 +691,21 @@ def delete(conn: psycopg.Connection, configuration_id: int, revision: int) -> di
         _check_revision(row, revision)
         conn.execute("DELETE FROM configurations WHERE id = %s", (row["id"],))
         return {"deleted_id": row["id"], "source_id": row["source_configuration_id"]}
+
+
+def mark_sold(conn: psycopg.Connection, configuration_id: int, sold: bool) -> int:
+    """Set or clear the listing-level manual sold mark; returns the addressed configuration id.
+
+    The mark belongs to the marketplace listing, so it covers every native and manual configuration of it.
+    Idempotent: marking an already marked listing keeps its original timestamp, clearing an unmarked one is a
+    no-op. Only ``listings.manual_sold_at`` changes: no hardware, price, revision or history, and a source that
+    really ended or was archived stays unreachable (it cannot be marked or un-marked, hence never resurrected).
+    """
+    with _write_transaction(conn):
+        listing, row = _lock(conn, configuration_id, live=True)
+        if sold:
+            conn.execute("UPDATE listings SET manual_sold_at = coalesce(manual_sold_at, now()) WHERE id = %s",
+                         (listing["id"],))
+        else:
+            conn.execute("UPDATE listings SET manual_sold_at = NULL WHERE id = %s", (listing["id"],))
+        return row["id"]

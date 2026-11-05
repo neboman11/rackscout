@@ -29,6 +29,7 @@ REFRESH_PATH = "/api/refresh"
 MAX_REFRESH_BODY = 1024
 MAX_EDIT_BODY = 32768
 MANUAL_PATH_RE = re.compile(r"/api/listings/[0-9]+/manual")
+SOLD_PATH_RE = re.compile(r"/api/listings/[0-9]+/sold")
 SELECTED_REFRESH_PATH_RE = re.compile(r"/api/listings/[0-9]+/refresh")
 
 SECURITY_HEADERS = {
@@ -52,6 +53,8 @@ _settings = load_settings()
 async def security_headers(request: Request, call_next: Any) -> Any:
     allowed = ("GET", "HEAD")
     if request.url.path == REFRESH_PATH or SELECTED_REFRESH_PATH_RE.fullmatch(request.url.path):
+        allowed = ("GET", "HEAD", "POST")
+    elif SOLD_PATH_RE.fullmatch(request.url.path):
         allowed = ("GET", "HEAD", "POST")
     elif MANUAL_PATH_RE.fullmatch(request.url.path):
         allowed = ("GET", "HEAD", "POST", "PATCH", "DELETE")
@@ -148,6 +151,7 @@ def parse_filters(
     max_total: str | None = None,
     diskless: str | None = None,
     hide_damaged: str | None = None,
+    include_sold: str | None = None,
     confirmed_only: str | None = None,
     match_status: str | None = None,
     q: Annotated[str | None, Query(max_length=200)] = None,
@@ -221,6 +225,7 @@ def parse_filters(
         max_total=total,
         diskless=_bool("diskless", diskless, True),
         hide_damaged=_bool("hide_damaged", hide_damaged, True),
+        include_sold=_bool("include_sold", include_sold, False),
         confirmed_only=_bool("confirmed_only", confirmed_only, False),
         match_status=status,
         q=text,
@@ -399,6 +404,8 @@ def _write_manual(operation: str, configuration_id: int, parsed: Any) -> dict[st
             return manual.delete(conn, configuration_id, parsed)
         if operation == "create":
             result_id = manual.create(conn, configuration_id, parsed)
+        elif operation == "sold":
+            result_id = manual.mark_sold(conn, configuration_id, parsed)
         else:
             result_id = manual.update(conn, configuration_id, parsed)
         item = queries.get_listing(conn, result_id)
@@ -456,6 +463,18 @@ async def delete_manual(listing_id: int, request: Request) -> dict[str, Any]:
     if set(payload) != {"revision"} or type(revision) is not int or not 0 < revision < 2**63:
         raise HTTPException(status_code=422, detail="Body must contain only a positive integer revision")
     return await run_in_threadpool(_write_manual, "delete", listing_id, revision)
+
+
+@app.post("/api/listings/{listing_id}/sold")
+async def mark_listing_sold(listing_id: int, request: Request) -> dict[str, Any]:
+    payload = await _mutation_body(request, _settings.edit_origins, "X-RackScout-Edit", MAX_EDIT_BODY,
+                                   "Manual editing disabled")
+    _valid_configuration_id(listing_id)
+    try:
+        sold = manual.parse_sold(payload)
+    except manual.ManualValidationError as exc:
+        raise _manual_error(exc) from None
+    return await run_in_threadpool(_write_manual, "sold", listing_id, sold)
 
 
 @app.get("/", include_in_schema=False)

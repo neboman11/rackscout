@@ -23,6 +23,7 @@ const DEFAULTS = {
   modern_only: 'true',
   confirmed_only: 'false',
   match_status: 'all',
+  include_sold: 'false',
   q: '',
   sort: 'price',
   page: '1',
@@ -30,7 +31,7 @@ const DEFAULTS = {
 const SELECT_KEYS = ['vendor', 'generation', 'height', 'min_ram', 'min_bays', 'drive_size', 'cpu_count', 'match_status'];
 const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 +\-]{0,59}$/;
 const MAX_MODELS = 100;
-const CHECK_KEYS = ['diskless', 'hide_damaged', 'modern_only', 'confirmed_only'];
+const CHECK_KEYS = ['diskless', 'hide_damaged', 'modern_only', 'confirmed_only', 'include_sold'];
 const HARDWARE_FILTERS = [
   { key: 'cpu_manufacturer', facet: 'cpu_manufacturers', title: 'CPU manufacturer', all: 'All manufacturers' },
   { key: 'cpu_architecture', facet: 'cpu_architectures', title: 'CPU architecture family', all: 'All families' },
@@ -85,6 +86,7 @@ let editor = null;
 let editorLoading = 0;
 let dialogGen = 0;
 let fetchTimer = 0;
+let soldPosting = false;
 
 const $ = id => document.getElementById(id);
 
@@ -615,7 +617,7 @@ function buildRow(item) {
     attrs: {
       type: 'button',
       'data-id': String(item.id),
-      'aria-label': 'View ' + (item.match_state === 'match' ? 'match, ' : 'unverified listing, ') + (item.origin === 'manual' ? 'manual configuration ' : '') + modelTitle(item) + ', RAM ' + ramDisplay(item) + ', ' + storageLabel(item) + ', ' + priceAria(item),
+      'aria-label': 'View ' + (item.manual_sold_at ? 'listing marked sold, ' : item.match_state === 'match' ? 'match, ' : 'unverified listing, ') + (item.origin === 'manual' ? 'manual configuration ' : '') + modelTitle(item) + ', RAM ' + ramDisplay(item) + ', ' + storageLabel(item) + ', ' + priceAria(item),
     },
   });
   const seller = [item.platform || providerName(item.provider || 'PerUnitPrice'), item.rack_units == null ? 'height unknown' : item.rack_units + 'U', item.condition || 'condition unknown'].join(' · ');
@@ -646,7 +648,7 @@ function buildRow(item) {
 
   const row = el('tr', null, [
     el('td', null, [nameButton,
-      el('span', { className: 'badge ' + (item.match_state === 'match' ? 'good' : 'review'), text: item.match_state === 'match' ? 'Match' : 'Unverified' }),
+      el('span', { className: 'badge ' + (item.manual_sold_at ? 'bad' : item.match_state === 'match' ? 'good' : 'review'), text: item.manual_sold_at ? 'Marked sold' : item.match_state === 'match' ? 'Match' : 'Unverified' }),
       manualBadge(item), variantLine(item), small(seller), manualUpdatedNote(item)]),
     cpuCell,
     socketCell,
@@ -1323,7 +1325,7 @@ async function loadDetail(id, options) {
 }
 
 function refreshOpenDetail() {
-  if (!$('detail').open || editor || editorLoading || !view || view.confirming) return;
+  if (!$('detail').open || editor || editorLoading || soldPosting || !view || view.confirming) return;
   loadDetail(view.id, { silent: true });
 }
 
@@ -1349,13 +1351,14 @@ function renderDetail(item) {
   const nodes = [];
 
   const states = el('div', null, [
-    el('span', { className: 'badge ' + (item.match_state === 'match' ? 'good' : 'review'), text: item.match_state === 'match' ? 'Match' : 'Unverified lead — not a confirmed match' }),
+    el('span', { className: 'badge ' + (item.manual_sold_at ? 'bad' : item.match_state === 'match' ? 'good' : 'review'), text: item.manual_sold_at ? 'Marked sold by you' : item.match_state === 'match' ? 'Match' : 'Unverified lead — not a confirmed match' }),
     document.createTextNode(' '),
     el('span', { className: 'badge ' + badge.cls, text: badge.text }),
     item.origin === 'manual' ? document.createTextNode(' ') : null,
     item.origin === 'manual' ? el('span', { className: 'badge manual', text: 'Manual configuration — entered by you' }) : null,
   ]);
   nodes.push(states);
+  if (item.manual_sold_at) nodes.push(el('p', { className: 'subtle', text: 'Marked sold ' + (formatDate(item.manual_sold_at) || '') + '. All configurations for this listing are hidden by default. Your data and source history are retained.' }));
   nodes.push(el('div', { className: 'detail-price', text: priceHeadline(item) }));
   const priceNotes = [];
   priceNotes.push(itemPrice ? itemPrice + ' item + ' + (shipping ? shipping + ' quoted shipping' : 'shipping unknown') : 'Item price unknown');
@@ -1525,6 +1528,7 @@ function detailActions() {
   if (manual && manual.enabled === true) {
     bar.append(actionButton('Edit details', () => openEditor(view.id, 'edit'), 'edit-details'));
     bar.append(actionButton('Add configuration', () => openEditor(view.id, 'add'), 'add-config'));
+    bar.append(actionButton(item.manual_sold_at ? 'Undo sold mark' : 'Mark listing as sold', onSoldClick, 'mark-sold', item.manual_sold_at ? '' : 'danger'));
   }
   const fetchButton = actionButton('Fetch seller details', onFetchClick, 'fetch-seller');
   fetchButton.setAttribute('aria-disabled', 'true');
@@ -1546,14 +1550,64 @@ function detailActions() {
     note.textContent = 'Edit details saves a manual copy of this row and hides the source row while a copy exists. The original source data and evidence are kept. Add configuration creates a separate manual option without copying any price.';
   }
   nodes.push(note);
+  if (manual && manual.enabled === true) nodes.push(el('p', { className: 'subtle action-note', text: 'Sold marking applies to every configuration for this marketplace listing and survives refreshes. Enable “Include marked-sold listings” to find and undo a mark.' }));
   nodes.push(el('p', { className: 'subtle action-note', attrs: { id: 'fetch-reason' } }));
   return nodes;
 }
+
+async function onSoldClick() {
+  if (!view || !view.manual || view.manual.enabled !== true || soldPosting || editor || editorLoading) return;
+  const id = view.id;
+  const sold = !view.item.manual_sold_at;
+  soldPosting = true;
+  detailSeq += 1; // Invalidate older read-only detail loads before changing availability.
+  const controls = [...$('detail').querySelectorAll('button')].map(button => [button, button.disabled]);
+  for (const [button] of controls) button.disabled = true;
+  setDetailNotice(sold ? 'Marking listing as sold…' : 'Removing sold mark…', false);
+  let notice;
+  let failed = false;
+  try {
+    const response = await fetch('/api/listings/' + encodeURIComponent(id) + '/sold', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-RackScout-Edit': '1' },
+      body: JSON.stringify({ sold }),
+    });
+    if (!response.ok) {
+      failed = true;
+      notice = response.status === 403 ? 'Sold marking is not permitted from this page or is disabled.'
+        : response.status === 404 ? 'This listing is no longer active. Its source data has not been restored.'
+        : 'Sold marking could not be completed (server responded ' + response.status + '). Current state is being re-read.';
+    } else {
+      notice = sold ? 'Marked sold for all configurations. Enable “Include marked-sold listings” to find it later, or undo the mark here.'
+        : 'Sold mark removed. Source availability and all other filters still apply.';
+    }
+  } catch (error) {
+    failed = true;
+    notice = 'The update result is unknown after a network error. Current state is being re-read before you retry.';
+  }
+  try {
+    await loadListings();
+    if (Number(state.page) > lastPages) {
+      state.page = String(lastPages);
+      pushUrl();
+      await loadListings();
+    }
+    await loadDetail(id, { focus: true });
+    setDetailNotice(notice, failed);
+  } finally {
+    soldPosting = false;
+    for (const [button, disabled] of controls) if (button.isConnected) button.disabled = disabled;
+    $('close').disabled = false;
+  }
+}
+
 
 function fetchState() {
   const item = view && view.item;
   const info = refreshInfo;
   if (!item) return { ok: false, reason: 'Listing not loaded.' };
+  if (item.manual_sold_at) return { ok: false, reason: 'This listing is marked sold. Undo the sold mark before requesting seller details.' };
   if (view.manual && view.manual.fetch_enabled === false) return { ok: false, reason: 'Fetching seller details is disabled on this server. Manual editing still works.' };
   if (!info) return { ok: false, reason: 'Checking whether fetching is available…' };
   if (!info.enabled) return { ok: false, reason: 'Fetching is disabled on this server. Manual editing still works.' };
@@ -2039,7 +2093,7 @@ function showEditorAlert(title, messages, buttons) {
 
 // Discard guard rendered inside the dialog (no window.confirm), used by Cancel, Close and Escape.
 function guardDiscard(proceed) {
-  if (editor && editor.submitting) return;
+  if (soldPosting || (editor && editor.submitting)) return;
   if (!editor || !editorDirty()) {
     proceed();
     return;
@@ -2642,7 +2696,7 @@ function init() {
     if (event.target === dialog) guardDiscard(() => dialog.close());
   });
   dialog.addEventListener('cancel', event => {
-    if (editor && editor.submitting) {
+    if (soldPosting || (editor && editor.submitting)) {
       event.preventDefault();
       return;
     }

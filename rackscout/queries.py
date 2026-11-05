@@ -93,7 +93,7 @@ c.source_configuration_id, src.revision AS source_revision, src.active AS source
 (c.origin = 'manual' AND (src.active IS NOT TRUE
   OR src.revision IS DISTINCT FROM (c.manual_data->'baseline'->>'source_revision')::integer)) AS source_changed,
 l.item_id, l.provider, l.title, l.seller, l.condition, l.canonical_url, l.last_seen_source_at, l.last_seen_at,
-l.last_checked_at, l.next_check_after, l.detail_status, l.page_status, l.vendor,
+l.last_checked_at, l.next_check_after, l.detail_status, l.page_status, l.vendor, l.manual_sold_at,
 c.source_quote, (c.origin = 'source' AND c.source_quote IS NOT NULL AND {QUOTE_CURRENT_SQL}) AS quote_current,
 CASE WHEN c.origin = 'source' AND l.provider <> '{providers.EBAY}' THEN
   (SELECT count(*) FROM configurations o WHERE o.listing_id = c.listing_id AND o.origin = 'source' AND o.active)
@@ -153,6 +153,8 @@ class Filters:
     max_total: Decimal | None = None
     diskless: bool = True
     hide_damaged: bool = True
+    # Include listings the user manually marked sold (never real source-ended/archived ones).
+    include_sold: bool = False
     confirmed_only: bool = False
     match_status: str = "all"
     q: str | None = None
@@ -172,7 +174,7 @@ def build_predicates(f: Filters) -> tuple[list[str], list[str], list[str], dict[
     """
     if f.generation is not None and f.vendor is None:
         raise ValueError("generation numbers are vendor-specific; a vendor is required")
-    hard: list[str] = []
+    hard: list[str] = [] if f.include_sold else ["l.manual_sold_at IS NULL"]
     sat: list[str] = [PRICE_PAIRED_SQL, "c.hardware_state <> 'missing'"]
     bad: list[str] = ["(c.hardware_state = 'missing')"]
     p: dict[str, Any] = {}
@@ -300,7 +302,7 @@ def get_listing(conn: psycopg.Connection, listing_id: int) -> dict[str, Any] | N
     row = conn.execute(f"SELECT {SELECT_COLUMNS} {FROM_SQL} AND c.id = %(id)s", {"id": listing_id}).fetchone()
     if row is None:
         return None
-    default_inner, default_params = classified_sql(Filters(), hide_overridden=False)
+    default_inner, default_params = classified_sql(Filters(include_sold=True), hide_overridden=False)
     default = conn.execute(
         f"SELECT is_match FROM ({default_inner}) AS r WHERE id = %(id)s", {**default_params, "id": listing_id}
     ).fetchone()
@@ -540,6 +542,7 @@ def serialize(r: dict[str, Any], match_state: str) -> dict[str, Any]:
         "last_seen_at": _iso(r["last_seen_at"]),
         "last_checked_at": _iso(r["last_checked_at"]),
         "next_check_after": _iso(r["next_check_after"]),
+        "manual_sold_at": _iso(r["manual_sold_at"]),
         "detail_status": r["detail_status"],
         "page_verified_at": _iso(r["page_verified_at"]),
         "page_checked_at": _iso(r["page_checked_at"]),

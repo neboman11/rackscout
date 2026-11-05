@@ -157,7 +157,8 @@ def status(conn: psycopg.Connection, settings: Settings) -> dict[str, Any]:
 
 _RESOLVE_TARGET = """SELECT l.id, l.next_check_after, now() AS db_now
     FROM configurations c JOIN listings l ON l.id = c.listing_id
-    WHERE c.id = %s AND c.active AND l.archived_at IS NULL AND l.ended_at IS NULL"""
+    WHERE c.id = %s AND c.active AND l.archived_at IS NULL AND l.ended_at IS NULL
+      AND l.manual_sold_at IS NULL"""
 
 
 def enqueue(conn: psycopg.Connection, settings: Settings, *,
@@ -166,7 +167,7 @@ def enqueue(conn: psycopg.Connection, settings: Settings, *,
 
     With ``configuration_id`` the request targets that active configuration's live
     marketplace listing (any origin, including manual configurations) instead of the
-    whole source. Raises ``ListingRefreshNotFound`` for an unknown/inactive/archived/ended
+    whole source. Raises ``ListingRefreshNotFound`` for an unknown/inactive/archived/ended/manually sold
     target and ``ListingRefreshCooldown`` while the listing's ``next_check_after`` lies in
     the future; neither consumes the queue slot or the global cooldown. A global request
     clears any previous target.

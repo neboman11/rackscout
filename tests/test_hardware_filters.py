@@ -773,7 +773,10 @@ def test_migration_007_preserves_ids_values_manual_rows_history_and_backoff(v6_c
     # stay NULL instead of borrowing the source's current (since changed) DDR3.
     assert {cid: after[cid]["memory_type"] for cid in after} == {
         source_id: "DDR3", same_cpu_id: None, changed_cpu_id: None, retail_id: "DDR4"}
-    assert c.execute("SELECT * FROM listings ORDER BY id").fetchall() == listings
+    current_listings = {row["id"]: row for row in c.execute("SELECT * FROM listings ORDER BY id").fetchall()}
+    assert set(current_listings) == {row["id"] for row in listings}
+    for row in listings:
+        assert {key: current_listings[row["id"]][key] for key in row} == row
     assert c.execute("SELECT * FROM price_history ORDER BY id").fetchall() == history
     assert c.execute("SELECT * FROM origin_backoff ORDER BY origin").fetchall() == backoff
     assert c.execute("SELECT * FROM refresh_control").fetchall() == refresh

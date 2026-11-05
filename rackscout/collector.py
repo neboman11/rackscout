@@ -578,7 +578,7 @@ SELECT l.id, l.provider, l.item_id, l.source_record, l.description_claims, l.des
        l.description_checked_at, l.page_claims, l.page_status, l.quote_status
 FROM listings l
 LEFT JOIN server_models m ON m.model = l.model
-WHERE l.archived_at IS NULL AND l.ended_at IS NULL
+WHERE l.archived_at IS NULL AND l.ended_at IS NULL AND l.manual_sold_at IS NULL
   AND (l.next_check_after IS NULL OR l.next_check_after <= now())
   AND NOT (l.provider = ANY(%(skip)s))
 """
@@ -710,6 +710,13 @@ def enrich_retailer(conn: psycopg.Connection, settings: Settings, fetcher: HttpF
     return ("verified" if status == "success" else status), message
 
 
+def _still_eligible(conn: psycopg.Connection, listing_id: int) -> bool:
+    with conn.transaction():
+        return conn.execute(
+            "SELECT 1 FROM listings WHERE id = %s AND archived_at IS NULL AND ended_at IS NULL"
+            " AND manual_sold_at IS NULL", (listing_id,)).fetchone() is not None
+
+
 def run_enrichment(conn: psycopg.Connection, settings: Settings, fetcher: HttpFetcher, max_details: int,
                    browser_enabled: bool, *, target_listing_id: int | None = None) -> str:
     if max_details <= 0:
@@ -740,6 +747,11 @@ def run_enrichment(conn: psycopg.Connection, settings: Settings, fetcher: HttpFe
             # Quiet gap after each listing of any provider, including cached descriptions and backoffs.
             if attempted:
                 time.sleep(settings.request_delay)
+            # The candidate list predates the quiet gap: re-read live eligibility (no lock kept across network)
+            # so a listing marked sold, ended or archived meanwhile is never requested or touched.
+            if not _still_eligible(conn, cand["id"]):
+                log.info("listing %s no longer eligible for a detail check; skipped", cand["item_id"])
+                continue
             attempted += 1
             if cand["provider"] != PROVIDER:
                 result, note = enrich_retailer(conn, settings, fetcher, cand, catalog, retail_backing_off)

@@ -74,6 +74,8 @@ Manual rows participate in filtering, sorting and pagination, with their own pri
 
 Entries survive automatic collection. Recorded dates and source-change warnings stay visible; collection cannot overwrite your values. Stale concurrent saves return a conflict and retain the draft rather than overwriting another edit. Pending saves freeze controls; completing a fetch does not discard an open draft. At most 100 active manual configurations are allowed per listing.
 
+Open any row and choose **Mark listing as sold** to hide every configuration for that marketplace listing. Prices, manual work and history stay intact, and collection never clears your mark. Enable **Include marked-sold listings** to inspect it and choose **Undo sold mark**. Other filters still apply, and undoing your mark cannot restore a listing that the source says ended or that was archived. Marked listings are skipped by detail checks; no marketplace request is needed to mark or undo.
+
 Manual writes require the exact-origin allowlist `RACKSCOUT_EDIT_ORIGINS`, independently of collection permissions. For local development, use `http://localhost:8080,http://127.0.0.1:8080`; an empty value disables editing. Compose forwards this optional setting to the web service. Apartment enables it through `manualEditing.enabled`. All permitted private-LAN clients share the same saved entries; this is not per-user authentication.
 
 **Fetch seller details** requests enrichment of that listing only, without fetching vendor index pages. It shares the global one-hour manual-refresh cooldown, six-hour listing cooldown, request pacing, description cache and source backoff. A queued worker performs the request; the web process does not scrape. Results can be cached, partial or blocked, and never overwrite manual configurations. Browser-disabled fetching can add seller-described specifications, but cannot reliably enumerate marketplace option prices.
@@ -137,7 +139,7 @@ An unset dataset path leaves existing database references unchanged; a fresh dat
 `Dockerfile` uses the Playwright 1.64.1 Python image matching the pinned dependency. The runtime is non-root; production workloads use a read-only root filesystem, writable temporary storage, no Kubernetes API token and no-new-privileges. No host credentials or Docker socket are mounted.
 
 ```sh
-podman build -t localhost/rackscout:0.10.1 .
+podman build -t localhost/rackscout:0.11.0 .
 ```
 
 `compose.yaml` provides PostgreSQL, migration, web and on-demand collection. Export a strong `POSTGRES_PASSWORD` before starting it. Web binds to localhost.
@@ -184,6 +186,8 @@ GitOps chart: `~/Desktop/argocd-definitions/application/rackscout/`.
 Apartment values: `environments/apartment/application/rackscout.yaml`.
 Private route: `http://rackscout.apartment` through the existing `local-gateway`.
 
+Application images are published with the package's semantic version, such as `ghcr.io/neboman11/rackscout:0.11.0`; GitOps uses this tag so the service-update job can discover newer versions. Commit hashes are OCI revision labels, not GitOps image tags. Published version tags cannot be overwritten by the release workflow; bump the package version for each release.
+
 Resources include CNPG PostgreSQL (one instance, 5Gi replicated Mayastor storage), migration Job, web Deployment/Service, isolated manual-refresh worker sidecar and daily collection CronJob. The worker uses the same immutable image, its own resources and temporary volume, a 30-minute collection deadline, and no Kubernetes API token or Job-creation permissions. The home ApplicationSet excludes RackScout. Database resources are protected from Argo prune/deletion; that is not a backup strategy.
 
 Browser-enabled collectors use `collector.browserSeccompProfile: rackscout/chromium-5cce89ebf72d3863.json`. This immutable amd64 profile preserves containerd 2.4.2's empty-capability default policy except for allowing `clone`, `setns`, `unshare` and `chroot`. Collectors retain UID/GID 1000, zero capabilities, no-new-privileges and Chromium's namespace/renderer seccomp sandbox. Web and migration use RuntimeDefault. No node-wide seccomp relaxation or runtime restart is required.
@@ -210,3 +214,5 @@ Release 0.9.0 migration 007 adds CPU platform references and derived configurati
 Release 0.10.0 removes confidence-first grouping in favor of global sorting, per-row status badges and an explicit match-status filter. Price order compares known quoted totals with item-price lower bounds when shipping is unknown. No schema migration or collection run is required.
 
 Release 0.10.1 migration 008 restores previously hidden, explicitly saved prices on unconfirmed manual configurations. No re-entry or collection is needed. Only effective money, shipping context and the stale unknown-total warning change; user metadata, confirmations, timestamps, hardware, source rows and history are preserved. Keep a pre-upgrade backup; older releases reject schema 008, so restore that backup before reverting to an older image.
+
+Release 0.11.0 migration 009 adds a persistent nullable manual sold timestamp, without changing existing inventory or manual configurations. Back up before upgrading; older releases reject schema 009. Sold marking is local database state, never a scrape or a claim of source-confirmed sale. Daily collection timing, pacing and backoffs remain unchanged.
