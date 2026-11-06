@@ -121,7 +121,7 @@ Rows use reported/entered totals first. Otherwise, an exact CPU match supplies c
 
 In the editor, **Look up cores** displays a reference without modifying the draft. **Use N total cores** explicitly fills the field; save to keep it. Applying follows normal manual-field and price-confirmation rules. Unknown population or CPUs marked missing cannot fill an installed total. SKU versions and suffixes stay distinct; ambiguous, contradictory or unsupported names remain unknown rather than borrowing a similar CPU's count.
 
-Lookup uses the packaged snapshot, with no API key, database migration, external request, extra scrape job or change to daily collection. New CPU coverage arrives with a reviewed catalog/release update; this is not a live vendor API. GET `/api/cpu-specs?cpu_model=Gold%206150&cpu_count=2` is also available.
+Lookup uses the packaged snapshot, with no API key, database migration, external request, extra scrape job or change to scheduled collection. New CPU coverage arrives with a reviewed catalog/release update; this is not a live vendor API. GET `/api/cpu-specs?cpu_model=Gold%206150&cpu_count=2` is also available.
 
 
 ## CPU benchmarks
@@ -139,7 +139,7 @@ An unset dataset path leaves existing database references unchanged; a fresh dat
 `Dockerfile` uses the Playwright 1.64.1 Python image matching the pinned dependency. The runtime is non-root; production workloads use a read-only root filesystem, writable temporary storage, no Kubernetes API token and no-new-privileges. No host credentials or Docker socket are mounted.
 
 ```sh
-podman build -t localhost/rackscout:0.11.0 .
+podman build -t localhost/rackscout:0.11.1 .
 ```
 
 `compose.yaml` provides PostgreSQL, migration, web and on-demand collection. Export a strong `POSTGRES_PASSWORD` before starting it. Web binds to localhost.
@@ -155,14 +155,14 @@ GitHub Actions runs the PostgreSQL-backed suite before publishing an image tagge
 
 ## Collection lifecycle and configuration
 
-Automatic collection runs once daily at **04:00 UTC** (`0 4 * * *`). The **Refresh data** button queues an additional collection using the same server-detail budget, source backoff and global collector lock. Manual requests have a one-hour cooldown; repeated clicks cannot create overlapping collections. Versioned migrations preserve inventory and history.
+Automatic collection runs **weekly on Sundays at 04:00 UTC** (`0 4 * * 0`). The **Refresh data** button still queues an explicit additional collection using the same five-minute pacing, server-detail budget, source backoff and global collector lock. Manual requests have a one-hour cooldown; repeated clicks cannot create overlapping collections. Versioned migrations preserve inventory and history.
 
 - `RACKSCOUT_MAX_DETAILS`: one shared budget across eBay and retailers; default 25 listing-detail checks per run.
-- `RACKSCOUT_REQUEST_DELAY`: quiet gap between listing detail checks and minimum per-origin HTTP request spacing; default 6 seconds.
+- `RACKSCOUT_REQUEST_DELAY`: quiet gap between listing detail checks and minimum per-origin HTTP request spacing; default 300 seconds, accepted range 1–300.
 - `RACKSCOUT_BROWSER_ENABLED`: browser verification switch; default true.
 - `RACKSCOUT_RETAILERS_ENABLED`: enable the three fixed US retailer catalogs/product lookups; default true. Stored inventory is not deleted when disabled.
 - `RACKSCOUT_RECHECK_COOLDOWN_HOURS`: minimum interval between detail attempts; default 6.
-- `RACKSCOUT_PAGE_VERIFICATION_HOURS`: successful eBay verification or retailer-quote lifetime; default 12, not shorter than the cooldown. With daily collection, exact quotes become historical for part of each day unless refreshed.
+- `RACKSCOUT_PAGE_VERIFICATION_HOURS`: successful eBay verification or retailer-quote lifetime; default 12, not shorter than the cooldown. Weekly collection does not extend this lifetime: exact quotes become historical between runs unless refreshed.
 - `RACKSCOUT_BENCHMARKS_FILE`: optional privately provisioned reference JSON file.
 - `RACKSCOUT_REFRESH_ORIGINS`: exact comma-separated origins allowed to request manual collection; empty disables manual requests.
 - `RACKSCOUT_REFRESH_COOLDOWN_SECONDS`: persisted manual-request cooldown; default 3600 seconds.
@@ -174,11 +174,11 @@ Stored verification expires at read time, even without another collector run. Fa
 
 At the default budget, up to 12 checks go to cheap previously verified target systems, 12 to new targets and at least one to the globally oldest candidate. Unused quota is filled without exceeding the cap. Budgets below three cannot guarantee progress in every lane; bounded collection cannot keep every listing continuously verified.
 
-At six seconds, detail processing has at least a six-second quiet gap after each listing, even when its description is cached or a browser source is backing off. That caps listing throughput around ten per minute; network/processing time makes it slower. Browser subresources are not a ten-HTTP-requests-per-minute guarantee. The 25-listing budget and daily schedule are unchanged, and challenges/Retry-After still take precedence. Slower collection cannot guarantee that a provider will not restrict access.
+Detail processing waits at least **five minutes between listings**, even when descriptions are cached or a browser source is backing off; network/processing time makes it slower. The same 300-second setting limits per-origin HTTP request starts, not every browser subresource request. The shared 25-listing detail budget stays unchanged. Catalog discovery and paced detail checks can take hours, so scheduled and manual collections have matching **12-hour limits** rather than the old 30-minute cutoff. Challenges, source backoffs and Retry-After still take precedence; slower collection cannot guarantee that a provider will not restrict access.
 
 eBay source freshness uses the publisher's snapshot time, not local fetch time. Retailer catalog freshness uses the latest successful local observation because these APIs do not provide a catalog snapshot timestamp; quote times remain separate. Valid-source disappearance is not confirmed sold; absence-based archival requires seven days and a complete applicable source snapshot. Price history is retained for 90 days.
 
-Manual refresh and editing are intended only for a trusted private LAN. Origin/header checks protect against browser cross-site requests, not untrusted clients that forge headers. Do not expose these controls publicly without authentication. Daily collection reduces request volume, not the risk of provider restrictions or the need for permission. Source freshness/verification expiry remain explicit; the daily schedule does not make old data current.
+Manual refresh and editing are intended only for a trusted private LAN. Origin/header checks protect against browser cross-site requests, not untrusted clients that forge headers. Do not expose these controls publicly without authentication. Weekly collection reduces request volume, not the need for provider permission. Source freshness and verification expiry remain explicit; a weekly schedule does not make old data current.
 
 ## Apartment deployment
 
@@ -188,7 +188,7 @@ Private route: `http://rackscout.apartment` through the existing `local-gateway`
 
 Application images are published with the package's semantic version, such as `ghcr.io/neboman11/rackscout:0.11.0`; GitOps uses this tag so the service-update job can discover newer versions. Commit hashes are OCI revision labels, not GitOps image tags. Published version tags cannot be overwritten by the release workflow; bump the package version for each release.
 
-Resources include CNPG PostgreSQL (one instance, 5Gi replicated Mayastor storage), migration Job, web Deployment/Service, isolated manual-refresh worker sidecar and daily collection CronJob. The worker uses the same immutable image, its own resources and temporary volume, a 30-minute collection deadline, and no Kubernetes API token or Job-creation permissions. The home ApplicationSet excludes RackScout. Database resources are protected from Argo prune/deletion; that is not a backup strategy.
+Resources include CNPG PostgreSQL (one instance, 5Gi replicated Mayastor storage), migration Job, web Deployment/Service, isolated manual-refresh worker sidecar and weekly collection CronJob. The worker uses the same immutable image, its own resources and temporary volume, a 12-hour collection deadline, and no Kubernetes API token or Job-creation permissions. The home ApplicationSet excludes RackScout. Database resources are protected from Argo prune/deletion; that is not a backup strategy.
 
 Browser-enabled collectors use `collector.browserSeccompProfile: rackscout/chromium-5cce89ebf72d3863.json`. This immutable amd64 profile preserves containerd 2.4.2's empty-capability default policy except for allowing `clone`, `setns`, `unshare` and `chroot`. Collectors retain UID/GID 1000, zero capabilities, no-new-privileges and Chromium's namespace/renderer seccomp sandbox. Web and migration use RuntimeDefault. No node-wide seccomp relaxation or runtime restart is required.
 
@@ -216,3 +216,5 @@ Release 0.10.0 removes confidence-first grouping in favor of global sorting, per
 Release 0.10.1 migration 008 restores previously hidden, explicitly saved prices on unconfirmed manual configurations. No re-entry or collection is needed. Only effective money, shipping context and the stale unknown-total warning change; user metadata, confirmations, timestamps, hardware, source rows and history are preserved. Keep a pre-upgrade backup; older releases reject schema 008, so restore that backup before reverting to an older image.
 
 Release 0.11.0 migration 009 adds a persistent nullable manual sold timestamp, without changing existing inventory or manual configurations. Back up before upgrading; older releases reject schema 009. Sold marking is local database state, never a scrape or a claim of source-confirmed sale. Daily collection timing, pacing and backoffs remain unchanged.
+
+Release 0.11.1 schedules automatic collection weekly on Sundays at 04:00 UTC and uses a five-minute gap between listing checks and per-origin HTTP starts. Matching 12-hour collection limits leave room for paced discovery plus the unchanged 25-detail budget. Existing inventory, manual/sold state, history, quote expiry and source backoffs are unchanged; no collection is needed for this configuration update.

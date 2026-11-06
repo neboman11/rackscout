@@ -1,8 +1,7 @@
-"""Enrichment scheduling and page-verification validity.
+"""Enrichment priority, configurable pacing and independent verification expiry.
 
-Verified modern-era 1U target matches must be rechecked before their verification
-window closes, even when many never-checked non-target or new listings are
-queued, while new targets and the oldest other candidates keep bounded progress.
+Due modern-era 1U targets receive bounded priority alongside new and oldest
+candidates. Slow or infrequent collection never extends stored quote validity.
 Database tests share the isolated UUID-schema fixture from ``test_db``.
 """
 from dataclasses import replace
@@ -23,7 +22,6 @@ from test_db import (  # noqa: F401 - `conn` is a fixture
 )
 
 TARGET_TITLE = TRAP[1]
-CRON_INTERVAL = timedelta(hours=4)
 
 
 # ---------------------------------------------------------------------------
@@ -122,13 +120,6 @@ def _match_state(conn, item_id, variant_id="2"):
 # ---------------------------------------------------------------------------
 
 
-def test_page_verification_window_outlasts_recheck_cooldown_plus_cron(monkeypatch):
-    from rackscout.config import load_settings
-
-    s = load_settings()
-    assert timedelta(hours=s.page_verification_hours) > timedelta(hours=s.recheck_cooldown_hours) + CRON_INTERVAL
-    monkeypatch.setenv("RACKSCOUT_PAGE_VERIFICATION_HOURS", "20")
-    assert load_settings().page_verification_hours == 20
 
 
 def test_page_verification_window_shorter_than_cooldown_is_rejected(monkeypatch):
@@ -315,6 +306,9 @@ def test_detail_checks_respect_interval_even_with_cached_descriptions(
     conn, monkeypatch, browser_enabled, cached, work_seconds,
 ):
     from rackscout import browser, collector
+    from rackscout.config import load_settings
+
+    monkeypatch.setenv("RACKSCOUT_REQUEST_DELAY", "300")
 
     _discover(conn, [(_item_id(1), "R640", "400.00"), (_item_id(2), "R640", "400.00")])
     if cached:
@@ -355,6 +349,6 @@ def test_detail_checks_respect_interval_even_with_cached_descriptions(
     monkeypatch.setattr(collector, "time", SimpleNamespace(sleep=sleep))
     monkeypatch.setattr(browser, "BrowserChecker", Checker)
     collector.run_enrichment(
-        conn, replace(settings(), request_delay=6.0), Fetcher(), 2, browser_enabled,
+        conn, replace(settings(), request_delay=load_settings().request_delay), Fetcher(), 2, browser_enabled,
     )
-    assert starts == [0.0, work_seconds + 6.0]
+    assert starts == [0.0, work_seconds + 300.0]

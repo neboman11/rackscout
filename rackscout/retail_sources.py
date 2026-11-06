@@ -1,7 +1,7 @@
 """US retailer catalog connectors (TechMikeNY, SaveMyServer, Cloud Ninjas).
 
 All transport goes through the shared :class:`rackscout.sources.HttpFetcher`
-(six-second per-origin pacing, manual allowlisted redirects, 403/429/503 ->
+(configured per-origin pacing, manual allowlisted redirects, 403/429/503 ->
 ``SourceBlocked``). This module only builds fixed, allowlisted GET URLs, parses
 public JSON and normalises it. Nothing here posts, builds carts, or follows
 arbitrary URLs.

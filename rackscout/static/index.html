@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
 <title>RackScout — used rack server finder</title>
-<link rel="stylesheet" href="/static/app.css?v=0.11.0">
-<script src="/static/app.js?v=0.11.0" defer></script>
+<link rel="stylesheet" href="/static/app.css?v=0.11.1">
+<script src="/static/app.js?v=0.11.1" defer></script>
 </head>
 <body>
 <a href="#inventory" class="sr-only">Skip to inventory</a>
@@ -125,7 +125,7 @@
       <section class="refresh" id="refresh-panel" aria-labelledby="refresh-title">
         <div class="refresh-text">
           <h2 id="refresh-title">Data refresh</h2>
-          <p class="subtle" id="refresh-schedule">Listings are collected automatically once a day at 04:00 UTC. “Refresh data” asks the server to collect now; it honors source back-offs and is rate limited.</p>
+          <p class="subtle" id="refresh-schedule">Listings are collected weekly on Sundays at 04:00 UTC, with at least five minutes between listing checks. “Refresh data” asks the server to collect now using the same pacing, back-offs and limits.</p>
           <p id="refresh-message" class="refresh-message" role="status" aria-live="polite">Checking refresh availability…</p>
         </div>
         <div class="refresh-actions">

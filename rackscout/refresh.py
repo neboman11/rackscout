@@ -46,7 +46,7 @@ log = logging.getLogger(__name__)
 
 POLL_SECONDS = 5.0
 # Upper bound for one manual collection, matching the scheduled collector's job deadline.
-REFRESH_DEADLINE_SECONDS = 1800
+REFRESH_DEADLINE_SECONDS = 43200
 ACTIVE = ("queued", "running")
 # Bound for every queue statement and lock wait, so contention cannot hold the collector lock indefinitely.
 QUEUE_TIMEOUT = "10s"

@@ -129,8 +129,8 @@ class Settings:
 
 def load_settings() -> Settings:
     recheck_cooldown_hours = _int("RACKSCOUT_RECHECK_COOLDOWN_HOURS", 6, 1, 24 * 30)
-    # How long a successful eBay page verification stays current. It must outlast the
-    # recheck cooldown plus the collection schedule interval so rechecks land in time.
+    # Quote validity is independent of collection cadence; slow/weekly collection never renews old evidence.
+    # Keep the window no shorter than the per-listing recheck cooldown.
     page_verification_hours = _int("RACKSCOUT_PAGE_VERIFICATION_HOURS", 12, 1, 24 * 30)
     if page_verification_hours < recheck_cooldown_hours:
         raise ConfigError("RACKSCOUT_PAGE_VERIFICATION_HOURS must not be shorter than RACKSCOUT_RECHECK_COOLDOWN_HOURS")
@@ -140,7 +140,7 @@ def load_settings() -> Settings:
         browser_enabled=_bool("RACKSCOUT_BROWSER_ENABLED", True),
         browser_timeout=_float("RACKSCOUT_BROWSER_TIMEOUT", 45.0, 5.0, 300.0),
         request_timeout=_float("RACKSCOUT_REQUEST_TIMEOUT", 30.0, 1.0, 120.0),
-        request_delay=_float("RACKSCOUT_REQUEST_DELAY", 6.0, 1.0, 120.0),
+        request_delay=_float("RACKSCOUT_REQUEST_DELAY", 300.0, 1.0, 300.0),
         recheck_cooldown_hours=recheck_cooldown_hours,
         page_verification_hours=page_verification_hours,
         max_index_bytes=_int("RACKSCOUT_MAX_INDEX_BYTES", 8 * 1024 * 1024, 4 * 1024 * 1024, 64 * 1024 * 1024),

@@ -1055,7 +1055,7 @@ function refreshMessageText(info) {
   const server = info.message ? ' ' + info.message : '';
   const selected = info.scope === 'listing';
   const target = info.target_item_id ? providerName(info.target_provider || 'PerUnitPrice') + ' listing ' + info.target_item_id : 'the selected listing';
-  if (!info.enabled) return 'Manual refresh is disabled on this server. Data is still collected automatically once a day at 04:00 UTC.' + server;
+  if (!info.enabled) return 'Manual refresh is disabled on this server. Data is still collected automatically on Sundays at 04:00 UTC.' + server;
   if (info.state === 'queued') {
     if (selected) return 'Fetch queued for ' + target + ' only, not the whole inventory. This page will update when it finishes.' + server;
     return 'Refresh queued. Waiting for the worker to start. This page will update when it finishes.' + server;
