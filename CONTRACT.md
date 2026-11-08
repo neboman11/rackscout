@@ -34,6 +34,15 @@ GET `/api/status` retains aggregate discovery/enrichment/backoff fields and adds
 
 Discovery is source-local per vendor page: a page that fails, is blocked, or returns a snapshot older than the one already applied for that page keeps its last-good listings and freshness; absence-based archiving (7 days) applies only to listings last attributed to a complete, applied page. A block stops further requests to the shared origin for that run and sets origin backoff. Items listed on several vendor pages are deduplicated by eBay item id (first page in source order wins). Run state is `partial` when at least one page applied and any page did not succeed.
 
+### Database-session recovery
+
+Scheduled and manual collections use the same `CollectionSession` for database work and the global collector advisory lock. Only transient session loss is recoverable: at most three recoveries per collection, each bounded to 120 seconds. Reconnection must reacquire the exclusive lock and pass persisted run/request ownership guards; another owner, superseded state or unknown commit outcome aborts without further marketplace requests. A still-running collector may resume after a database restart; a stopped process is never replayed automatically.
+
+Only atomic database checkpoints are retried. Acquired index/product/description/browser observations, candidate order, counters, detail budget and fetcher pacing remain in memory. PostgreSQL transaction status resolves lost commit acknowledgements; stable run identities prevent duplicate phase rows. HTTP ownership checks run after per-origin waits, and actual request starts remain at least the configured delay apart even when recovery is slow. Provider backoff expiry is anchored to the original block observation and never shortened.
+
+Under the exclusive collector lock, a new collection or a worker identifying an abandoned manual request finalizes unfinished source phase records as failed without discarding committed inventory. Manual terminal updates retain the same request identity and cannot overwrite a newer request. No schema change, source retry, backoff reset or additional scheduled collection accompanies this recovery behavior.
+
+
 ## Manual refresh
 
 Config: `RACKSCOUT_REFRESH_ORIGINS` comma-separated exact `http`/`https` origins (`scheme://host[:port]`; no path, query, wildcard or credentials; scheme/host lowercased, default port dropped; invalid entries fail startup); empty/unset disables manual refresh. `RACKSCOUT_REFRESH_COOLDOWN_SECONDS` default 3600, minimum 60: minimum time between ACCEPTED requests, durable in PostgreSQL across pods/restarts; completion never resets it. Web and worker must use the same values.

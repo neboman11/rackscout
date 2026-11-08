@@ -134,6 +134,8 @@ class HttpFetcher:
     def __init__(self, timeout: float, delay: float, client: httpx.Client | None = None):
         self.delay = delay
         self._last: dict[str, float] = {}
+        # Collector checks ownership after pacing, immediately before every redirect/request.
+        self.before_request: Callable[[], None] | None = None
         self.client = client or httpx.Client(
             timeout=httpx.Timeout(timeout),
             follow_redirects=False,
@@ -150,7 +152,6 @@ class HttpFetcher:
             remaining = self.delay - (time.monotonic() - last)
             if remaining > 0:
                 time.sleep(remaining)
-        self._last[origin] = time.monotonic()
 
     def get_text(self, url: str, allowed: Callable[[str], bool], max_bytes: int) -> tuple[int, str]:
         """GET an allowlisted URL; return (status, text). Redirect hops must stay allowlisted."""
@@ -159,6 +160,9 @@ class HttpFetcher:
                 raise SourceError("refusing non-allowlisted URL")
             origin = urlsplit(url).hostname or ""
             self._wait(origin)
+            if self.before_request is not None:
+                self.before_request()
+            self._last[origin] = time.monotonic()
             try:
                 with self.client.stream("GET", url) as response:
                     status = response.status_code

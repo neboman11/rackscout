@@ -5,15 +5,18 @@ import json
 import logging
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from functools import partial
 from typing import Any
 
 import psycopg
 from psycopg.types.json import Jsonb
 
 from . import db, domain, hardware_platforms, providers, retail_sources
+from .collection_session import CollectionSession
 from .config import DESCRIPTION_HOST, EBAY_HOST, Settings
 from .sources import HttpFetcher, IndexSnapshot, SourceBlocked, SourceError
 
@@ -106,12 +109,110 @@ def _now() -> datetime:
 # ---------------------------------------------------------------------------
 
 
-def start_run(conn: psycopg.Connection, kind: str) -> int:
-    with conn.transaction():
+# Message of a run a stopped collector left open, finalized by the next collection under the lock. It also
+# fences the stopped collector: a run finalized this way is never resumed (``Checkpoints.owns``).
+ORPHAN_RUN_MESSAGE = "Collector stopped before finishing this run; finalized by a later collection"
+
+
+def finalize_interrupted_runs(conn: psycopg.Connection) -> None:
+    """Mark every unfinished source run failed. DB-only; caller holds the global collector lock and the transaction.
+
+    With the lock held no collector is running, so an open run belongs to a stopped one.
+    """
+    conn.execute(
+        "UPDATE source_runs SET finished_at = now(), outcome = 'failed', message = %s WHERE finished_at IS NULL",
+        (ORPHAN_RUN_MESSAGE,))
+
+
+class Checkpoints:
+    """Database checkpoints of one collection.
+
+    Wraps a ``CollectionSession`` (collector lock verified before every checkpoint, transient
+    connection failures reconnected and the lock reacquired, then only the DB callback retried) or a
+    raw connection (one plain transaction per checkpoint, no recovery). ``run`` callbacks are DB-only
+    and atomic and may execute more than once: they derive everything from in-memory acquisition
+    results and reset whatever state they mutate. Source and browser requests happen only between
+    checkpoints, each after ``check``, and are never repeated by a retry.
+
+    Run identity is stable under an ambiguous commit: the id is reserved first, then inserted with
+    ``ON CONFLICT DO NOTHING``. With a session, ``begin`` arms a persisted ownership fence: after a
+    reconnect the session calls ``owns`` under the reacquired lock, and a newer collection that
+    created runs, or finalized this collection's open run as orphaned, stops this one from resuming.
+    """
+
+    def __init__(self, target: CollectionSession | psycopg.Connection) -> None:
+        self._conn = target if isinstance(target, psycopg.Connection) else None
+        self.session = None if self._conn is not None else target
+        self._high_water = 0  # highest source_runs id this collection has seen or reserved
+        self._run_id: int | None = None  # this collection's latest run
+        self._complete = False
+
+    def run(self, callback: Callable[[psycopg.Connection], Any]) -> Any:
+        if self.session is not None:
+            return self.session.run(callback)
+        with self._conn.transaction():
+            return callback(self._conn)
+
+    def check(self) -> None:
+        """Network boundary: confirm (or recover) collector ownership before a source/browser request."""
+        if self.session is not None:
+            self.session.check()
+
+    def begin(self) -> None:
+        """Finalize runs a stopped collector left open and arm the run fence. Caller holds the collector lock."""
+        def begin(conn: psycopg.Connection) -> int:
+            finalize_interrupted_runs(conn)
+            return conn.execute("SELECT coalesce(max(id), 0) AS id FROM source_runs").fetchone()["id"]
+
+        self._high_water = self.run(begin)
+        if self.session is not None:
+            self.session.add_resume_guard(self.owns)
+
+    def owns(self, conn: psycopg.Connection) -> bool:
+        """Resume guard: no newer collection ran while this one was disconnected (DB-only, under the lock)."""
+        if self._complete:
+            return True  # every source phase finished; the caller's own bookkeeping may continue
         row = conn.execute(
-            "INSERT INTO source_runs (provider, kind) VALUES (%s, %s) RETURNING id", (RUN_PROVIDER, kind)
+            """SELECT EXISTS (SELECT 1 FROM source_runs WHERE id > %(seen)s) AS superseded,
+                 EXISTS (SELECT 1 FROM source_runs WHERE id = %(run)s AND finished_at IS NOT NULL
+                         AND message = %(orphan)s) AS orphaned""",
+            {"seen": self._high_water, "run": self._run_id, "orphan": ORPHAN_RUN_MESSAGE},
         ).fetchone()
-    return row["id"]
+        if row["superseded"] or row["orphaned"]:
+            log.error("a newer collection ran while this collector was disconnected; not resuming")
+            return False
+        return True
+
+    def start_run(self, kind: str) -> int:
+        run_id = self.run(
+            lambda conn: conn.execute("SELECT nextval(pg_get_serial_sequence('source_runs', 'id')) AS id").fetchone()["id"])
+        # Fence first: a retried INSERT is only resumed while no newer collection holds a later id.
+        self._run_id, self._high_water = run_id, max(self._high_water, run_id)
+        self.run(lambda conn: conn.execute(
+            "INSERT INTO source_runs (id, provider, kind) VALUES (%s, %s, %s) ON CONFLICT (id) DO NOTHING",
+            (run_id, RUN_PROVIDER, kind)))
+        return run_id
+
+    def complete(self) -> None:
+        """Every source phase finished: later checkpoints (caller bookkeeping) no longer need the run fence."""
+        self._complete = True
+
+    def abandon(self, message: str) -> None:
+        """Best effort: mark this collection's still-open run failed after an unexpected error."""
+        run_id = self._run_id
+        if run_id is None:
+            return
+        try:
+            self.run(lambda conn: conn.execute(
+                """UPDATE source_runs SET finished_at = now(), outcome = 'failed', message = %s
+                   WHERE id = %s AND finished_at IS NULL""", (message[:500], run_id)))
+        except (psycopg.Error, db.DatabaseUnavailable) as exc:
+            log.warning("could not mark run %s failed (%s); the next collection finalizes it", run_id,
+                        type(exc).__name__)
+
+
+def _checkpoints(target: psycopg.Connection | Checkpoints) -> Checkpoints:
+    return target if isinstance(target, Checkpoints) else Checkpoints(target)
 
 
 def finish_run(conn: psycopg.Connection, run_id: int, outcome: str, message: str | None, *,
@@ -130,13 +231,19 @@ def backoff_until(conn: psycopg.Connection, origin: str) -> datetime | None:
     return row["blocked_until"] if row else None
 
 
-def set_backoff(conn: psycopg.Connection, origin: str, seconds: float, reason: str) -> None:
+def set_backoff(conn: psycopg.Connection, origin: str, seconds: float, reason: str, *,
+                observed_at: datetime | None = None) -> None:
+    """Back off ``origin`` until ``observed_at`` (default: now) plus ``seconds``; never shortens an active backoff.
+
+    A fixed observation time keeps a retried checkpoint from moving the expiry.
+    """
     conn.execute(
         """INSERT INTO origin_backoff (origin, blocked_until, reason, updated_at)
-           VALUES (%s, now() + make_interval(secs => %s), %s, now())
-           ON CONFLICT (origin) DO UPDATE SET blocked_until = EXCLUDED.blocked_until, reason = EXCLUDED.reason,
-             updated_at = now()""",
-        (origin, float(seconds), reason[:300]),
+           VALUES (%s, coalesce(%s::timestamptz, now()) + make_interval(secs => %s), %s, now())
+           ON CONFLICT (origin) DO UPDATE SET
+             blocked_until = greatest(origin_backoff.blocked_until, EXCLUDED.blocked_until),
+             reason = EXCLUDED.reason, updated_at = now()""",
+        (origin, observed_at, float(seconds), reason[:300]),
     )
 
 
@@ -467,100 +574,116 @@ def _fetch_page(page: PageResult, settings: Settings, fetcher: HttpFetcher, obse
     page.snapshot = replace(catalog, records=valid)
 
 
-def run_discovery(conn: psycopg.Connection, settings: Settings, fetcher: HttpFetcher) -> str:
+def run_discovery(conn: psycopg.Connection | Checkpoints, settings: Settings, fetcher: HttpFetcher) -> str:
     """Fetch every enabled discovery source and apply the valid ones atomically.
 
     Each eBay vendor page and retailer catalog keeps its own freshness, failure state and absence
     archiving, so a fresh source never refreshes or archives another source's last-good data. A
     block (or an active backoff) stops requests to that origin only; other providers continue.
+    ``conn`` is a raw connection or the collection's ``Checkpoints``; acquired snapshots stay in
+    memory while their database application is retried, so a reconnect never refetches a source.
     """
-    run_id = start_run(conn, "discovery")
+    checkpoints = _checkpoints(conn)
+    run_id = checkpoints.start_run("discovery")
     pages = discovery_pages(settings)
     observed = _now()
     stopped: dict[str, str] = {}  # origin -> reason no (further) request is made this run
-    blocks: dict[str, SourceBlocked] = {}
+    blocks: dict[str, tuple[SourceBlocked, datetime]] = {}  # origin -> block and when it was observed
     for page in pages:
         origin = page.origin
-        if origin not in stopped and (until := backoff_until(conn, origin)) is not None:
+        if origin not in stopped and (until := checkpoints.run(partial(backoff_until, origin=origin))) is not None:
             stopped[origin] = f"Backing off {origin} until {until.isoformat()}"
             log.warning("discovery skipped %s: origin backoff until %s", origin, until.isoformat())
         if origin in stopped:
             page.outcome, page.message = "blocked", stopped[origin]
             continue
+        checkpoints.check()
         try:
             _fetch_page(page, settings, fetcher, observed)
         except SourceBlocked as exc:
-            blocks[origin] = exc
+            blocks[origin] = (exc, _now())
             stopped[origin] = f"not requested after origin block: {exc}"
             page.outcome, page.message = "blocked", str(exc)
         except SourceError as exc:
             page.outcome, page.message = "failed", str(exc)
     if blocks:
-        with conn.transaction():
-            for origin, block in blocks.items():
-                set_backoff(conn, origin, block.retry_after or settings.recheck_cooldown_hours * 3600, str(block))
+        def store_backoffs(c: psycopg.Connection) -> None:
+            for origin, (block, blocked_at) in blocks.items():
+                set_backoff(c, origin, block.retry_after or settings.recheck_cooldown_hours * 3600, str(block),
+                            observed_at=blocked_at)
 
-    catalog = db.catalog(conn)
-    notes: list[str] = []
-    try:
-        with conn.transaction():
-            stored = {r["url"]: r["upstream_updated_at"]
-                      for r in conn.execute("SELECT url, upstream_updated_at FROM source_pages").fetchall()}
-            seen: set[tuple[str, str]] = set()
-            cross_duplicates = 0
-            unchanged = True
-            for page in pages:
-                if page.snapshot is None:
+        checkpoints.run(store_backoffs)
+
+    catalog = checkpoints.run(db.catalog)
+    acquired = [(page, page.snapshot, page.outcome, page.message) for page in pages]
+
+    def apply(c: psycopg.Connection) -> tuple[str, list[str]]:
+        # A retry starts again from the acquisition results, never from a rolled-back attempt's state.
+        for page, snapshot, outcome, message in acquired:
+            page.snapshot, page.outcome, page.message, page.retained = snapshot, outcome, message, 0
+        notes: list[str] = []
+        stored = {r["url"]: r["upstream_updated_at"]
+                  for r in c.execute("SELECT url, upstream_updated_at FROM source_pages").fetchall()}
+        seen: set[tuple[str, str]] = set()
+        cross_duplicates = 0
+        unchanged = True
+        for page in pages:
+            if page.snapshot is None:
+                continue
+            snapshot = page.snapshot
+            if isinstance(snapshot, IndexSnapshot):
+                prev = stored.get(page.url)
+                if prev is not None and snapshot.updated_at < prev:
+                    page.outcome = "failed"
+                    page.message = (f"Upstream snapshot {snapshot.updated_at.isoformat()} older than stored "
+                                    f"{prev.isoformat()}; ignored")
+                    page.snapshot = None
                     continue
-                snapshot = page.snapshot
-                if isinstance(snapshot, IndexSnapshot):
-                    prev = stored.get(page.url)
-                    if prev is not None and snapshot.updated_at < prev:
-                        page.outcome = "failed"
-                        page.message = (f"Upstream snapshot {snapshot.updated_at.isoformat()} older than stored "
-                                        f"{prev.isoformat()}; ignored")
-                        page.snapshot = None
-                        continue
-                    unchanged = unchanged and prev is not None and snapshot.updated_at == prev
-                cross_duplicates += apply_page(conn, page, catalog, seen)
-                page_archived = archive_absent(conn, page)
-                detail = [f"{len(snapshot.records)} listings"]
-                if snapshot.duplicates:
-                    detail.append(f"{snapshot.duplicates} duplicate item ids merged")
-                rejected = snapshot.rejected + page.invalid
-                if rejected:
-                    detail.append(f"{rejected} invalid records rejected; absence-based archiving skipped")
-                if not isinstance(snapshot, IndexSnapshot) and not snapshot.complete:
-                    detail.append("catalog incomplete; absence-based archiving and removal of unseen variants skipped")
-                if page.retained:
-                    detail.append(f"{page.retained} products kept their last complete observation")
-                if page_archived:
-                    detail.append(f"{page_archived} archived after 7 days absent")
-                page.outcome = "success" if page.complete else "partial"
-                page.message = "; ".join(detail)
-            applied = [p for p in pages if p.snapshot is not None]
-            for page in pages:
-                record_page(conn, page)
-                notes.append(f"{page.label}: {page.outcome if page.outcome != 'success' else 'ok'}"
-                             + (f" ({page.message})" if page.message else ""))
-            if cross_duplicates:
-                notes.append(f"{cross_duplicates} listings on several vendor pages merged")
-            ebay_applied = [p for p in applied if p.provider == PROVIDER]
-            if ebay_applied and unchanged:
-                notes.append("upstream timestamp unchanged")
-            if not applied:
-                outcome = "blocked" if any(p.outcome == "blocked" for p in pages) else "failed"
-            elif all(p.outcome == "success" for p in pages):
-                outcome = "success"
-            else:
-                outcome = "partial"
-            finish_run(conn, run_id, outcome, "; ".join(notes),
-                       upstream=min((p.snapshot.updated_at for p in ebay_applied), default=None),
-                       discovered=len(seen))
+                unchanged = unchanged and prev is not None and snapshot.updated_at == prev
+            cross_duplicates += apply_page(c, page, catalog, seen)
+            page_archived = archive_absent(c, page)
+            detail = [f"{len(snapshot.records)} listings"]
+            if snapshot.duplicates:
+                detail.append(f"{snapshot.duplicates} duplicate item ids merged")
+            rejected = snapshot.rejected + page.invalid
+            if rejected:
+                detail.append(f"{rejected} invalid records rejected; absence-based archiving skipped")
+            if not isinstance(snapshot, IndexSnapshot) and not snapshot.complete:
+                detail.append("catalog incomplete; absence-based archiving and removal of unseen variants skipped")
+            if page.retained:
+                detail.append(f"{page.retained} products kept their last complete observation")
+            if page_archived:
+                detail.append(f"{page_archived} archived after 7 days absent")
+            page.outcome = "success" if page.complete else "partial"
+            page.message = "; ".join(detail)
+        applied = [p for p in pages if p.snapshot is not None]
+        for page in pages:
+            record_page(c, page)
+            notes.append(f"{page.label}: {page.outcome if page.outcome != 'success' else 'ok'}"
+                         + (f" ({page.message})" if page.message else ""))
+        if cross_duplicates:
+            notes.append(f"{cross_duplicates} listings on several vendor pages merged")
+        ebay_applied = [p for p in applied if p.provider == PROVIDER]
+        if ebay_applied and unchanged:
+            notes.append("upstream timestamp unchanged")
+        if not applied:
+            outcome = "blocked" if any(p.outcome == "blocked" for p in pages) else "failed"
+        elif all(p.outcome == "success" for p in pages):
+            outcome = "success"
+        else:
+            outcome = "partial"
+        finish_run(c, run_id, outcome, "; ".join(notes),
+                   upstream=min((p.snapshot.updated_at for p in ebay_applied), default=None),
+                   discovered=len(seen))
+        return outcome, notes
+
+    try:
+        outcome, notes = checkpoints.run(apply)
     except psycopg.Error:
+        # Not a lost connection (a session recovers those and retries ``apply``): the snapshot itself failed.
         log.exception("discovery snapshot transaction failed; previous inventory retained")
-        with conn.transaction():
-            finish_run(conn, run_id, "failed", "Database error while applying snapshot; previous inventory retained")
+        checkpoints.run(partial(finish_run, run_id=run_id, outcome="failed",
+                                message="Database error while applying snapshot; previous inventory retained"))
         return "failed"
     log.info("discovery %s: %s", outcome, "; ".join(notes))
     return outcome
@@ -649,8 +772,17 @@ def select_candidates(conn: psycopg.Connection, budget: int, *,
     return list(chosen.values())
 
 
-def enrich_retailer(conn: psycopg.Connection, settings: Settings, fetcher: HttpFetcher, cand: dict[str, Any],
-                    catalog: dict[str, dict[str, Any]], backing_off: set[str]) -> tuple[str, str | None]:
+def _store_check(conn: psycopg.Connection, listing_id: int, update: str, params: Any,
+                 catalog: dict[str, dict[str, Any]]) -> None:
+    """Persist one acquired detail check and rebuild the listing's configurations (a retryable checkpoint)."""
+    conn.execute(update, params)
+    row = conn.execute(f"SELECT {RECOMPUTE_COLUMNS} FROM listings WHERE id = %s", (listing_id,)).fetchone()
+    recompute(conn, row, catalog, "enrichment")
+
+
+def enrich_retailer(conn: psycopg.Connection | Checkpoints, settings: Settings, fetcher: HttpFetcher,
+                    cand: dict[str, Any], catalog: dict[str, dict[str, Any]],
+                    backing_off: set[str]) -> tuple[str, str | None]:
     """Re-quote one retailer product through its own product endpoint only. Returns (outcome, message).
 
     Outcome is ``verified`` (fresh observation applied), ``blocked`` or ``failed``. A blocked or
@@ -658,13 +790,15 @@ def enrich_retailer(conn: psycopg.Connection, settings: Settings, fetcher: HttpF
     times and only marks the quote's latest attempt; a provider already backing off
     (``backing_off``) is not requested at all and its listing is left untouched.
     """
+    checkpoints = _checkpoints(conn)
     provider = cand["provider"]
     origin = retail_sources.RETAILERS[provider].origin
     if not settings.retailers_enabled:
         return "failed", "retailer collection disabled"
-    if provider in backing_off or backoff_until(conn, origin) is not None:
+    if provider in backing_off or checkpoints.run(partial(backoff_until, origin=origin)) is not None:
         backing_off.add(provider)
         return "blocked", f"{origin} backing off; not requested"
+    checkpoints.check()
     observed = _now()
     record: dict[str, Any] | None = None
     message: str | None = None
@@ -683,45 +817,36 @@ def enrich_retailer(conn: psycopg.Connection, settings: Settings, fetcher: HttpF
     except SourceBlocked as exc:
         status, message = "blocked", str(exc)
         backing_off.add(provider)
-        with conn.transaction():
-            set_backoff(conn, origin, exc.retry_after or settings.recheck_cooldown_hours * 3600, str(exc))
+        checkpoints.run(partial(set_backoff, origin=origin, seconds=exc.retry_after or settings.recheck_cooldown_hours * 3600,
+                                reason=str(exc), observed_at=_now()))
     except SourceError as exc:
         status, message = "failed", str(exc)
     cooldown = timedelta(hours=settings.recheck_cooldown_hours)
-    with conn.transaction():
-        if record is not None:
-            conn.execute(
-                """UPDATE listings SET quote_status = 'success', source_record = %(record)s, title = %(title)s,
-                     model = %(model)s, vendor = %(vendor)s, condition = coalesce(%(condition)s, condition),
-                     last_checked_at = now(), next_check_after = now() + %(cooldown)s, check_message = NULL
-                   WHERE id = %(id)s""",
-                {"record": _json(record), "title": record["title"], "model": record.get("model"),
-                 "vendor": record.get("vendor"), "condition": record.get("condition"), "cooldown": cooldown,
-                 "id": cand["id"]},
-            )
-        else:
-            conn.execute(
-                """UPDATE listings SET quote_status = %s, last_checked_at = now(), next_check_after = now() + %s,
-                     check_message = %s WHERE id = %s""",
-                (status, cooldown, (message or "")[:500] or None, cand["id"]),
-            )
-        row = conn.execute(f"SELECT {RECOMPUTE_COLUMNS} FROM listings WHERE id = %s", (cand["id"],)).fetchone()
-        recompute(conn, row, catalog, "enrichment")
+    if record is not None:
+        update = """UPDATE listings SET quote_status = 'success', source_record = %(record)s, title = %(title)s,
+                      model = %(model)s, vendor = %(vendor)s, condition = coalesce(%(condition)s, condition),
+                      last_checked_at = now(), next_check_after = now() + %(cooldown)s, check_message = NULL
+                    WHERE id = %(id)s"""
+        params: Any = {"record": _json(record), "title": record["title"], "model": record.get("model"),
+                       "vendor": record.get("vendor"), "condition": record.get("condition"), "cooldown": cooldown,
+                       "id": cand["id"]}
+    else:
+        update = """UPDATE listings SET quote_status = %s, last_checked_at = now(), next_check_after = now() + %s,
+                      check_message = %s WHERE id = %s"""
+        params = (status, cooldown, (message or "")[:500] or None, cand["id"])
+    checkpoints.run(partial(_store_check, listing_id=cand["id"], update=update, params=params, catalog=catalog))
     return ("verified" if status == "success" else status), message
 
 
 def _still_eligible(conn: psycopg.Connection, listing_id: int) -> bool:
-    with conn.transaction():
-        return conn.execute(
-            "SELECT 1 FROM listings WHERE id = %s AND archived_at IS NULL AND ended_at IS NULL"
-            " AND manual_sold_at IS NULL", (listing_id,)).fetchone() is not None
+    return conn.execute(
+        "SELECT 1 FROM listings WHERE id = %s AND archived_at IS NULL AND ended_at IS NULL"
+        " AND manual_sold_at IS NULL", (listing_id,)).fetchone() is not None
 
 
-def run_enrichment(conn: psycopg.Connection, settings: Settings, fetcher: HttpFetcher, max_details: int,
-                   browser_enabled: bool, *, target_listing_id: int | None = None) -> str:
-    if max_details <= 0:
-        return "skipped"
-    run_id = start_run(conn, "enrichment")
+def _enrichment_plan(conn: psycopg.Connection, settings: Settings, max_details: int,
+                     target_listing_id: int | None) -> tuple[set[str], list[dict[str, Any]], dict[str, dict[str, Any]], bool, bool]:
+    """(retailers backing off, candidates, catalog, description origin blocked, eBay page origin blocked)."""
     retail_backing_off = {key for key, r in retail_sources.RETAILERS.items() if backoff_until(conn, r.origin)}
     if target_listing_id is None:
         skip = set(retail_sources.RETAILERS) if not settings.retailers_enabled else retail_backing_off
@@ -729,12 +854,25 @@ def run_enrichment(conn: psycopg.Connection, settings: Settings, fetcher: HttpFe
     else:
         candidates = conn.execute(_CANDIDATE_COLUMNS + " AND l.id = %(id)s LIMIT 1",
                                   {"skip": [], "id": target_listing_id}).fetchall()
-    conn.commit()
-    catalog = db.catalog(conn)
+    return (retail_backing_off, candidates, db.catalog(conn), backoff_until(conn, DESCRIPTION_HOST) is not None,
+            backoff_until(conn, EBAY_HOST) is not None)
+
+
+def run_enrichment(conn: psycopg.Connection | Checkpoints, settings: Settings, fetcher: HttpFetcher, max_details: int,
+                   browser_enabled: bool, *, target_listing_id: int | None = None) -> str:
+    """Bounded detail checks. ``conn`` is a raw connection or the collection's ``Checkpoints``.
+
+    Every acquired description, browser result and retailer quote stays in memory, with the loop's
+    counters, while its database checkpoint is retried, so a reconnect never repeats a request.
+    """
+    if max_details <= 0:
+        return "skipped"
+    checkpoints = _checkpoints(conn)
+    run_id = checkpoints.start_run("enrichment")
+    retail_backing_off, candidates, catalog, desc_blocked, page_blocked = checkpoints.run(partial(
+        _enrichment_plan, settings=settings, max_details=max_details, target_listing_id=target_listing_id))
     cooldown = timedelta(hours=settings.recheck_cooldown_hours)
     verification_window = timedelta(hours=settings.page_verification_hours)
-    desc_blocked = backoff_until(conn, DESCRIPTION_HOST) is not None
-    page_blocked = backoff_until(conn, EBAY_HOST) is not None
     browser_note = None if browser_enabled else "browser checks disabled"
     checker = None
     if browser_enabled and not page_blocked and any(c["provider"] == PROVIDER for c in candidates):
@@ -749,12 +887,12 @@ def run_enrichment(conn: psycopg.Connection, settings: Settings, fetcher: HttpFe
                 time.sleep(settings.request_delay)
             # The candidate list predates the quiet gap: re-read live eligibility (no lock kept across network)
             # so a listing marked sold, ended or archived meanwhile is never requested or touched.
-            if not _still_eligible(conn, cand["id"]):
+            if not checkpoints.run(partial(_still_eligible, listing_id=cand["id"])):
                 log.info("listing %s no longer eligible for a detail check; skipped", cand["item_id"])
                 continue
             attempted += 1
             if cand["provider"] != PROVIDER:
-                result, note = enrich_retailer(conn, settings, fetcher, cand, catalog, retail_backing_off)
+                result, note = enrich_retailer(checkpoints, settings, fetcher, cand, catalog, retail_backing_off)
                 enriched += result == "verified"
                 blocked += result == "blocked"
                 failed += result == "failed"
@@ -770,6 +908,7 @@ def run_enrichment(conn: psycopg.Connection, settings: Settings, fetcher: HttpFe
             desc_checked = cand["description_checked_at"]
             desc_due = desc_status not in ("verified", "absent") or desc_checked is None or desc_checked < _now() - DESCRIPTION_REFRESH
             if desc_due and not desc_blocked:
+                checkpoints.check()
                 try:
                     parsed = fetcher.fetch_description(item_id, settings.max_description_bytes)
                     desc_checked = _now()
@@ -786,8 +925,9 @@ def run_enrichment(conn: psycopg.Connection, settings: Settings, fetcher: HttpFe
                     desc_status, desc_checked = "blocked", _now()
                     outcomes.append("blocked")
                     messages.append(str(exc))
-                    with conn.transaction():
-                        set_backoff(conn, DESCRIPTION_HOST, exc.retry_after or cooldown.total_seconds(), str(exc))
+                    checkpoints.run(partial(set_backoff, origin=DESCRIPTION_HOST,
+                                            seconds=exc.retry_after or cooldown.total_seconds(), reason=str(exc),
+                                            observed_at=desc_checked))
                 except SourceError as exc:
                     desc_status, desc_checked = "failed", _now()
                     outcomes.append("failed")
@@ -800,6 +940,7 @@ def run_enrichment(conn: psycopg.Connection, settings: Settings, fetcher: HttpFe
             page_status = cand["page_status"]
             page_checked = None
             if checker is not None and not page_blocked:
+                checkpoints.check()
                 page_checked = _now()
                 try:
                     result = checker.check(item_id)
@@ -815,8 +956,9 @@ def run_enrichment(conn: psycopg.Connection, settings: Settings, fetcher: HttpFe
                     page_status = "blocked"
                     outcomes.append("blocked")
                     messages.append(str(exc))
-                    with conn.transaction():
-                        set_backoff(conn, EBAY_HOST, exc.retry_after or cooldown.total_seconds(), str(exc))
+                    checkpoints.run(partial(set_backoff, origin=EBAY_HOST,
+                                            seconds=exc.retry_after or cooldown.total_seconds(), reason=str(exc),
+                                            observed_at=_now()))
                 except SourceError as exc:
                     page_status = "failed"
                     outcomes.append("failed")
@@ -842,19 +984,17 @@ def run_enrichment(conn: psycopg.Connection, settings: Settings, fetcher: HttpFe
             elif "failed" in outcomes or "blocked" in outcomes:
                 failed += 1
 
-            with conn.transaction():
-                conn.execute(
-                    """UPDATE listings SET description_claims = %(dc)s, description_status = %(ds)s,
-                         description_checked_at = %(dt)s, page_claims = %(pc)s, page_status = %(ps)s,
-                         page_checked_at = coalesce(%(pt)s, page_checked_at), last_checked_at = now(),
-                         next_check_after = now() + %(cooldown)s, check_message = %(msg)s
-                       WHERE id = %(id)s""",
-                    {"dc": _json(desc_claims) if desc_claims else None, "ds": desc_status, "dt": desc_checked,
-                     "pc": _json(page_claims) if page_claims else None, "ps": page_status, "pt": page_checked,
-                     "cooldown": cooldown, "msg": "; ".join(messages)[:500] or None, "id": cand["id"]},
-                )
-                row = conn.execute(f"SELECT {RECOMPUTE_COLUMNS} FROM listings WHERE id = %s", (cand["id"],)).fetchone()
-                recompute(conn, row, catalog, "enrichment")
+            checkpoints.run(partial(
+                _store_check, listing_id=cand["id"],
+                update="""UPDATE listings SET description_claims = %(dc)s, description_status = %(ds)s,
+                     description_checked_at = %(dt)s, page_claims = %(pc)s, page_status = %(ps)s,
+                     page_checked_at = coalesce(%(pt)s, page_checked_at), last_checked_at = now(),
+                     next_check_after = now() + %(cooldown)s, check_message = %(msg)s
+                   WHERE id = %(id)s""",
+                params={"dc": _json(desc_claims) if desc_claims else None, "ds": desc_status, "dt": desc_checked,
+                        "pc": _json(page_claims) if page_claims else None, "ps": page_status, "pt": page_checked,
+                        "cooldown": cooldown, "msg": "; ".join(messages)[:500] or None, "id": cand["id"]},
+                catalog=catalog))
     finally:
         if checker is not None:
             checker.close()
@@ -875,8 +1015,7 @@ def run_enrichment(conn: psycopg.Connection, settings: Settings, fetcher: HttpFe
         message = f"{message}; {browser_note}"
     if page_blocked and browser_enabled and ebay_attempted and "backing off" not in message:
         message = f"{message}; eBay page checks backing off"
-    with conn.transaction():
-        finish_run(conn, run_id, outcome, message, enriched=enriched)
+    checkpoints.run(partial(finish_run, run_id=run_id, outcome=outcome, message=message, enriched=enriched))
     log.info("enrichment %s: %s", outcome, message)
     return outcome
 
@@ -890,8 +1029,8 @@ def _is_playwright_error(exc: Exception) -> bool:
 
 
 def prune_history(conn: psycopg.Connection) -> None:
-    with conn.transaction():
-        conn.execute("DELETE FROM price_history WHERE observed_at < now() - interval '90 days'")
+    """Drop price history older than 90 days. Caller owns the transaction (a checkpoint)."""
+    conn.execute("DELETE FROM price_history WHERE observed_at < now() - interval '90 days'")
 
 
 class SchemaNotMigrated(RuntimeError):
@@ -911,55 +1050,102 @@ def try_collector_lock(lock_conn: psycopg.Connection) -> bool:
     return bool(lock_conn.execute("SELECT pg_try_advisory_lock(%s) AS ok", (db.COLLECTOR_LOCK_KEY,)).fetchone()["ok"])
 
 
+def _guard_requests(fetcher: HttpFetcher, check: Callable[[], None]) -> Callable[[], None]:
+    """Chain ``check`` into the fetcher's ``before_request`` hook; return a callable restoring the caller's hook.
+
+    The hook runs after the fetcher's origin pacing, right before each request. Test doubles
+    without the hook are left untouched.
+    """
+    if not hasattr(fetcher, "before_request"):
+        return lambda: None
+    previous = fetcher.before_request
+
+    def before_request() -> None:
+        if previous is not None:
+            previous()
+        check()
+
+    fetcher.before_request = before_request
+
+    def restore() -> None:
+        fetcher.before_request = previous
+
+    return restore
+
+
 def run_collection(settings: Settings, max_details: int | None = None, browser: bool | None = None,
-                   fetcher: HttpFetcher | None = None, *, target_listing_id: int | None = None) -> CollectionResult:
+                   fetcher: HttpFetcher | None = None, *, target_listing_id: int | None = None,
+                   session: CollectionSession) -> CollectionResult:
     """Run full collection, or only one selected listing, while caller holds the collector lock.
 
-    Opens and closes its own work connection. A fetcher created here is closed
-    here; a caller-supplied fetcher stays the caller's.
+    Every database step is a recoverable checkpoint on the caller's locked session;
+    every source request and browser check first verifies ownership. Runs left open by a
+    stopped collector are finalized failed first. A fetcher created here is closed here;
+    a caller-supplied fetcher stays caller's, with its previous ``before_request`` hook restored.
     """
-    # Autocommit: every `conn.transaction()` block is a real, atomic transaction.
-    conn = db.connect(settings.db_connect_timeout, autocommit=True)
+    checkpoints = Checkpoints(session)
     owned = fetcher is None
+    restore_hook: Callable[[], None] | None = None
     try:
         if fetcher is None:
             fetcher = HttpFetcher(settings.request_timeout, settings.request_delay)
-        if not db.schema_ready(conn):
+        if not checkpoints.run(db.schema_ready):
             raise SchemaNotMigrated("database schema not migrated")
+        checkpoints.begin()
+        restore_hook = _guard_requests(fetcher, checkpoints.check)
         budget = settings.max_details if max_details is None else max_details
-        if target_listing_id is None:
-            discovery = run_discovery(conn, settings, fetcher)
-        else:
-            discovery = "skipped"
-            budget = min(settings.max_details, budget, 1)
-        enrichment_options = {} if target_listing_id is None else {"target_listing_id": target_listing_id}
-        enrichment = run_enrichment(
-            conn, settings, fetcher, budget,
-            settings.browser_enabled if browser is None else (browser and settings.browser_enabled),
-            **enrichment_options,
-        )
-        prune_history(conn)
+        try:
+            if target_listing_id is None:
+                discovery = run_discovery(checkpoints, settings, fetcher)
+            else:
+                discovery = "skipped"
+                budget = min(settings.max_details, budget, 1)
+            enrichment_options = {} if target_listing_id is None else {"target_listing_id": target_listing_id}
+            enrichment = run_enrichment(
+                checkpoints, settings, fetcher, budget,
+                settings.browser_enabled if browser is None else (browser and settings.browser_enabled),
+                **enrichment_options,
+            )
+            checkpoints.run(prune_history)
+        except db.DatabaseUnavailable:
+            raise  # lost ownership or database: nothing may be written; the next collection finalizes the run
+        except Exception as exc:
+            checkpoints.abandon(f"Collection aborted ({type(exc).__name__}); remaining checks not performed")
+            raise
+        checkpoints.complete()
         return CollectionResult(discovery, enrichment)
     finally:
+        if restore_hook is not None:
+            restore_hook()
         if owned and fetcher is not None:
             fetcher.close()
-        conn.close()
 
 
 def collect(settings: Settings, max_details: int | None = None, browser: bool | None = None) -> int:
-    """Run one scheduled collection unless another collector holds the lock. Returns process exit code."""
+    """Run one scheduled collection unless another collector holds the lock. Returns process exit code.
+
+    The lock connection carries the whole collection through a ``CollectionSession``: a lost
+    connection is replaced and the lock reacquired within the session's bounds, or the collection
+    stops with ``db.DatabaseUnavailable`` (exit 1 via the CLI) without repeating any source request.
+    """
     lock_conn = db.connect(settings.db_connect_timeout, autocommit=True)
+    session: CollectionSession | None = None
     try:
         if not try_collector_lock(lock_conn):
             log.warning("another collector holds the lock; exiting")
             return 0
+        session = CollectionSession(settings, lock_conn)
         try:
-            result = run_collection(settings, max_details=max_details, browser=browser)
+            result = run_collection(settings, max_details=max_details, browser=browser, session=session)
         except SchemaNotMigrated:
             log.error("database schema not migrated; run `python -m rackscout migrate`")
             return 1
         # A partial snapshot applied its valid records; its degraded state is visible in /api/status.
         return 0 if result.discovery in ("success", "partial") else 1
     finally:
-        # Closing the session releases the advisory lock.
-        lock_conn.close()
+        # Closing the sessions releases the advisory lock (a replacement connection holds it after recovery).
+        try:
+            if session is not None:
+                session.close()
+        finally:
+            lock_conn.close()

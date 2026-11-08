@@ -38,6 +38,7 @@ from typing import Any
 import psycopg
 
 from . import collector, db
+from .collection_session import CollectionSession, CollectorOwnershipLost
 from .config import Settings
 from .queries import _iso
 from .sources import HttpFetcher
@@ -281,7 +282,7 @@ def final_state(result: collector.CollectionResult) -> tuple[str, str]:
 
 
 def _execute(settings: Settings, fetcher: HttpFetcher | None, deadline_seconds: float | None,
-             target_listing_id: int | None = None) -> tuple[str, str]:
+             target_listing_id: int | None = None, *, session: CollectionSession) -> tuple[str, str]:
     """Run one collection (caller holds the collector lock); never raises for collection failures.
 
     A target runs no discovery and enriches at most that one listing within the configured detail-check budget.
@@ -289,15 +290,19 @@ def _execute(settings: Settings, fetcher: HttpFetcher | None, deadline_seconds: 
     try:
         with _deadline(deadline_seconds):
             if target_listing_id is None:
-                result = collector.run_collection(settings, fetcher=fetcher)
+                result = collector.run_collection(settings, fetcher=fetcher, session=session)
             else:
-                result = collector.run_collection(settings, fetcher=fetcher, target_listing_id=target_listing_id)
+                result = collector.run_collection(
+                    settings, fetcher=fetcher, target_listing_id=target_listing_id, session=session)
     except RefreshDeadline:
         log.error("manual refresh exceeded its %ss deadline; aborted", deadline_seconds)
         return "failed", f"Refresh aborted after exceeding its {deadline_seconds:g}s deadline"
     except collector.SchemaNotMigrated:
         log.error("database schema not migrated; run `python -m rackscout migrate`")
         return "failed", "Database schema not migrated"
+    except CollectorOwnershipLost:
+        log.warning("collector ownership changed; manual refresh stopped without replay")
+        return "failed", "Collector ownership changed; refresh stopped without replay"
     except db.DatabaseUnavailable:
         log.error("database unavailable during manual refresh")
         return "failed", "Database unavailable during refresh"
@@ -337,6 +342,7 @@ def process_pending(lock_conn: psycopg.Connection, settings: Settings, *, fetche
         return None
     if should_stop() or not collector.try_collector_lock(lock_conn):
         return None
+    session: CollectionSession | None = None
     try:
         with lock_conn.transaction():
             row = lock_conn.execute(_SELECT + " FOR UPDATE").fetchone()
@@ -344,6 +350,7 @@ def process_pending(lock_conn: psycopg.Connection, settings: Settings, *, fetche
                 return None
             if row["state"] == "running":
                 lock_conn.execute(_MARK_INTERRUPTED, (INTERRUPTED_MESSAGE,))
+                collector.finalize_interrupted_runs(lock_conn)
                 log.warning("manual refresh %s was interrupted; marked failed", row["request_id"])
                 return "failed"
             request_id = row["request_id"]
@@ -363,17 +370,41 @@ def process_pending(lock_conn: psycopg.Connection, settings: Settings, *, fetche
                     (request_id,),
                 )
             return None
-        state, message = _execute(settings, fetcher, deadline_seconds, target_listing_id)
-        with lock_conn.transaction():
-            lock_conn.execute(
+        finishing: tuple[str, str] | None = None
+
+        def still_ours(connection: psycopg.Connection) -> bool:
+            current = connection.execute(
+                "SELECT request_id, state, message FROM refresh_control WHERE id = 1").fetchone()
+            if current is None or current["request_id"] != request_id:
+                return False
+            # A terminal commit can succeed before its acknowledgement is lost.
+            return current["state"] == "running" or (
+                finishing is not None and (current["state"], current["message"]) == finishing)
+
+        session = CollectionSession(settings, lock_conn, resume_guard=still_ours)
+        state, message = _execute(
+            settings, fetcher, deadline_seconds, target_listing_id, session=session)
+        finishing = (state, message[:500])
+
+        def finish(connection: psycopg.Connection) -> None:
+            connection.execute(
                 """UPDATE refresh_control SET state = %s, message = %s, finished_at = now(), updated_at = now()
                    WHERE id = 1 AND request_id = %s AND state = 'running'""",
-                (state, message[:500], request_id),
+                (*finishing, request_id),
             )
+
+        session.run(finish)
         log.info("manual refresh %s finished: %s (%s)", request_id, state, message)
         return state
+    except CollectorOwnershipLost:
+        log.warning("manual refresh ownership lost; newer request state left untouched")
+        return "failed"
     finally:
-        _unlock(lock_conn)
+        try:
+            _unlock(session.connection if session is not None else lock_conn)
+        finally:
+            if session is not None:
+                session.close()
 
 
 def run_worker(settings: Settings, poll_seconds: float = POLL_SECONDS) -> int:

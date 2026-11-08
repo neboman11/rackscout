@@ -3,7 +3,7 @@
 Self-hosted used-server finder with web filters, PostgreSQL inventory, configuration evidence, CPU benchmark references and explicit populated/available sockets.
 
 - Repository: https://github.com/neboman11/rackscout
-- Images: `ghcr.io/neboman11/rackscout`, tagged with the full source commit SHA.
+- Images: `ghcr.io/neboman11/rackscout`, tagged with immutable semantic release versions.
 - Intended hosting: private LAN or homelab. Public source/image publication does not expose your deployment or database.
 
 ## OEMs and default filters
@@ -139,7 +139,7 @@ An unset dataset path leaves existing database references unchanged; a fresh dat
 `Dockerfile` uses the Playwright 1.64.1 Python image matching the pinned dependency. The runtime is non-root; production workloads use a read-only root filesystem, writable temporary storage, no Kubernetes API token and no-new-privileges. No host credentials or Docker socket are mounted.
 
 ```sh
-podman build -t localhost/rackscout:0.11.1 .
+podman build -t localhost/rackscout:0.11.2 .
 ```
 
 `compose.yaml` provides PostgreSQL, migration, web and on-demand collection. Export a strong `POSTGRES_PASSWORD` before starting it. Web binds to localhost.
@@ -151,7 +151,7 @@ podman compose --profile collector run --rm collect
 
 Do not destroy database volumes unless you explicitly intend data loss. Kubernetes collectors drop every capability and use the scoped seccomp profile described below; web and migration retain RuntimeDefault. A failed Chromium sandbox is reported as failed enrichment, never worked around with `--no-sandbox`, privileged mode, `SYS_ADMIN` or unconfined seccomp. The local Compose example does not provision this Kubernetes profile; browser launch still requires compatible local runtime policy.
 
-GitHub Actions runs the PostgreSQL-backed suite before publishing an image tagged with the exact source commit SHA. Pull requests have read-only permissions and cannot publish. Only the main-branch publication job receives package-write permission.
+GitHub Actions runs the PostgreSQL-backed suite before publishing an immutable semantic-version image from `pyproject.toml`; the source commit remains an OCI provenance label, not the GitOps tag. Pull requests have read-only permissions and cannot publish. Only the main-branch publication job receives package-write permission.
 
 ## Collection lifecycle and configuration
 
@@ -169,6 +169,10 @@ Automatic collection runs **weekly on Sundays at 04:00 UTC** (`0 4 * * 0`). The 
 - `RACKSCOUT_EDIT_ORIGINS`: exact comma-separated origins allowed to save manual configurations; empty disables editing independently of manual collection.
 
 Discovery pages and origins are fixed/allowlisted, not user-supplied scrape URLs. `GET /api/refresh` only reads stored/control state; `POST /api/refresh` accepts an empty JSON object with the same-origin application header. The web process only queues work; a separate `python -m rackscout refresh-worker` process performs collection without Kubernetes API credentials. Restarted workers retain queued requests and mark interrupted running requests failed rather than replaying them.
+
+A database restart does not restart collection from the beginning. The live collector retains fetched snapshots, descriptions, browser results and its remaining detail plan, reconnects for up to **120 seconds per recovery**, and permits at most **three recoveries per collection**. It must reacquire the exclusive collector lock and verify persisted ownership before resuming database-only checkpoints. Another owner or an unresolved transaction outcome stops collection; no marketplace request is replayed. Five-minute pacing, the detail budget, successful quote timestamps and provider backoffs are retained.
+
+When a new collection starts under the exclusive lock, it marks phase records left unfinished by a stopped process as failed, retaining previously committed inventory. A worker detecting an abandoned manual request does the same. This is bookkeeping only, not an automatic retry of the abandoned scan.
 
 Stored verification expires at read time, even without another collector run. Failed, blocked and browser-disabled attempts never renew successful verification. Historical quotes remain unverified leads with the last successful page check separate from the latest detail attempt. Legacy observations without a recorded expiry retain a conservative six-hour window.
 
@@ -218,3 +222,5 @@ Release 0.10.1 migration 008 restores previously hidden, explicitly saved prices
 Release 0.11.0 migration 009 adds a persistent nullable manual sold timestamp, without changing existing inventory or manual configurations. Back up before upgrading; older releases reject schema 009. Sold marking is local database state, never a scrape or a claim of source-confirmed sale. Daily collection timing, pacing and backoffs remain unchanged.
 
 Release 0.11.1 schedules automatic collection weekly on Sundays at 04:00 UTC and uses a five-minute gap between listing checks and per-origin HTTP starts. Matching 12-hour collection limits leave room for paced discovery plus the unchanged 25-detail budget. Existing inventory, manual/sold state, history, quote expiry and source backoffs are unchanged; no collection is needed for this configuration update.
+
+Release 0.11.2 adds bounded database-session recovery for scheduled and manual collections, transaction-outcome checks, ownership fencing and interrupted-run bookkeeping. No schema migration or full refresh is required. Verification includes terminating real PostgreSQL backends and restarting an isolated PostgreSQL server during CLI collection; production provider requests are not needed to test recovery.
